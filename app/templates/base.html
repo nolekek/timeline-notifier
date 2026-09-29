@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Timeline Notifier — админка</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎓 Timeline Notifier <span class="muted">админка</span></h1>
+            <nav>
+                <a href="{{ url_for('web.index') }}">Пользователи</a>
+                <form method="POST" action="{{ url_for('web.run_check_all') }}" class="inline">
+                    <button type="submit" class="link-btn">Проверить всех</button>
+                </form>
+                <form method="POST" action="{{ url_for('web.bot_restart') }}" class="inline">
+                    <button type="submit" class="link-btn">Перезапустить бота</button>
+                </form>
+            </nav>
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

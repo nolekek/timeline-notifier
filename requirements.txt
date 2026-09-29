@@ -1,0 +1,10 @@
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+APScheduler==3.10.4
+requests==2.32.3
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1
+# SOCKS5-прокси для requests (tg-ws-proxy / любой socks5)
+PySocks==1.7.1
+# Шифрование паролей ЭИОС (Fernet). Если не ставится — пароли хранятся обфусцированными.
+cryptography==43.0.1

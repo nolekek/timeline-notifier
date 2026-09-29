@@ -1,0 +1,20 @@
+[Unit]
+Description=Timeline Notifier (Telegram bot + admin panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Правь пути под свой сервер
+WorkingDirectory=/opt/timeline_notifier
+EnvironmentFile=/opt/timeline_notifier/.env
+ExecStart=/opt/timeline_notifier/venv/bin/python /opt/timeline_notifier/run.py
+User=timeline
+Group=timeline
+Restart=always
+RestartSec=10
+# Дедлайны парсятся в локальном времени — держи московскую зону
+Environment=TZ=Europe/Moscow
+
+[Install]
+WantedBy=multi-user.target

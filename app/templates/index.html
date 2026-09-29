@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="card">
+    <h2>Общие настройки</h2>
+    <form method="POST" action="{{ url_for('web.save_settings') }}">
+        <div class="grid">
+            <label>Telegram Bot Token
+                <input type="text" name="telegram_bot_token"
+                       value="{{ setting.telegram_bot_token or '' }}"
+                       placeholder="123456:AA...">
+            </label>
+            <label>Интервал проверки по умолчанию (сек)
+                <input type="number" name="check_interval" min="60"
+                       value="{{ setting.check_interval or 300 }}">
+            </label>
+        </div>
+        <label class="checkbox">
+            <input type="checkbox" name="restart_bot" value="1" checked>
+            Перезапустить бота с новым токеном
+        </label>
+        <button type="submit">Сохранить</button>
+    </form>
+    <p class="muted">
+        Прокси и адрес Telegram API задаются в <code>.env</code>:
+        <code>TELEGRAM_PROXY</code>, <code>TELEGRAM_API_BASE</code>.
+        Логины и пароли студентов бот собирает сам в личке.
+    </p>
+    {% if setting.last_check_at %}
+        <p class="muted">Последний тик планировщика: {{ setting.last_check_at.strftime('%d.%m.%Y %H:%M:%S') }} UTC</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <h2>Сводка</h2>
+    <p>
+        Чатов: <b>{{ stats.users }}</b> ·
+        с данными ЭИОС: <b>{{ stats.registered }}</b> ·
+        активных: <b>{{ stats.active }}</b> ·
+        работ в базе: <b>{{ stats.works }}</b>
+    </p>
+</section>
+
+<section class="card">
+    <h2>Пользователи ({{ rows|length }})</h2>
+    {% if rows %}
+    <table>
+        <thead>
+            <tr>
+                <th>Кто</th>
+                <th>Chat ID</th>
+                <th>Логин ЭИОС</th>
+                <th>Работ</th>
+                <th>Просрочено</th>
+                <th>Интервал</th>
+                <th>Проверка</th>
+                <th>Статус</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for r in rows %}
+            <tr>
+                <td><a href="{{ url_for('web.user_detail', user_id=r.user.id) }}">{{ r.user.title }}</a></td>
+                <td><code>{{ r.user.chat_id }}</code></td>
+                <td><code>{{ r.user.timeline_login or '—' }}</code></td>
+                <td>{{ r.works }}</td>
+                <td>{% if r.overdue %}<span class="badge-overdue">{{ r.overdue }}</span>{% else %}0{% endif %}</td>
+                <td>{{ r.interval }} мин</td>
+                <td>{{ r.user.last_check_at.strftime('%d.%m %H:%M') if r.user.last_check_at else '—' }}</td>
+                <td>
+                    {% if not r.user.is_registered %}ждёт данные
+                    {% elif not r.user.is_active %}выключен
+                    {% elif r.user.last_error %}<span class="badge-overdue">ошибка</span>
+                    {% else %}ок{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+        <p class="muted">Пока никто не написал боту. Отправь боту <code>/start</code>.</p>
+    {% endif %}
+</section>
+{% endblock %}

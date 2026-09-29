@@ -1,0 +1,16 @@
+[Unit]
+Description=tg-ws-proxy (SOCKS5 -> WebSocket tunnel to Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Если ставил из исходников: pip install -e . даёт команду tg-ws-proxy
+ExecStart=/usr/local/bin/tg-ws-proxy --host 127.0.0.1 --port 1080
+Restart=always
+RestartSec=10
+User=nobody
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
