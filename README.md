@@ -364,8 +364,8 @@ git clone <репозиторий> /opt/timeline_notifier && cd /opt/timeline_no
 cp .env.example .env
 nano .env                       # SECRET_KEY, CRED_KEY, ADMIN_USER/ADMIN_PASSWORD, ADMIN_CHAT_ID
 
+id -u                           # если не 1000 — впиши это число в .env как APP_UID (и id -g как APP_GID)
 mkdir -p instance
-sudo chown -R 10001:10001 instance      # ВАЖНО на Linux, см. «грабли» ниже
 
 docker compose up -d --build
 docker compose logs -f                  # ждём «Планировщик запущен» и «Бот: @...»
@@ -413,13 +413,21 @@ cp instance/timeline.db ~/timeline-backup.db          # восстановлен
 docker compose start bot
 ```
 
+Никакого `sudo`: контейнер пишет в `./instance` от твоего пользователя.
+
 ### Грабли именно в докере
 
-1. **Права на `./instance`.** Контейнер работает от uid **10001**, а папку создаёт твой
-   пользователь (обычно uid 1000). Тогда приложение падает с
-   `unable to open database file` — мы это специально ловим на старте и пишем подсказку.
-   Лечение: `sudo chown -R 10001:10001 instance` (или используй именованный том вместо
-   bind-mount).
+1. **Права на `./instance`.** Контейнер пишет в эту папку от uid/gid, заданного в
+   `docker-compose.yml` (`APP_UID`/`APP_GID`, по умолчанию `1000:1000` — типичный первый
+   пользователь Ubuntu). Если твой uid другой (`id -u`), контейнер не сможет создать базу и
+   приложение упадёт на старте с понятным текстом — впиши свои числа в `.env`:
+   ```env
+   APP_UID=1001
+   APP_GID=1001
+   ```
+   Тогда никаких `chown` и `sudo` не нужно: база принадлежит тебе, бэкап — обычное копирование.
+   Альтернатива (если хочется гонять контейнер от встроенного пользователя 10001): убрать
+   `user:` из compose и сделать `sudo chown -R 10001:10001 instance`.
 2. **Один инстанс на один токен.** Нельзя одновременно держать контейнер и локальный
    `python run.py` с тем же токеном: Telegram отдаёт апдейты только одному, во втором будет
    `409 Conflict` и бот не увидит ни одной команды. Это же правило про `docker compose up

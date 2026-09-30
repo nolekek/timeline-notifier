@@ -24,8 +24,10 @@ def _ensure_instance_dir(path: Path) -> None:
     except OSError as e:
         raise RuntimeError(
             f'Нет доступа на запись в {path} ({e}).\n'
-            'Если это Docker: sudo chown -R 10001:10001 ./instance '
-            '(или смонтируй именованный том вместо bind-mount).'
+            'Если это Docker: контейнер должен работать под тем же uid/gid, что владелец\n'
+            'папки instance (в .env задай APP_UID/APP_GID, проверить: id -u и id -g).\n'
+            'Либо, если оставляешь встроенного пользователя 10001: '
+            'sudo chown -R 10001:10001 ./instance'
         ) from e
 
 
