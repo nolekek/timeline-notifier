@@ -7,7 +7,29 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 INSTANCE_DIR = BASE_DIR / 'instance'
-INSTANCE_DIR.mkdir(exist_ok=True)
+
+
+def _ensure_instance_dir(path: Path) -> None:
+    """Папка instance/ должна существовать и быть доступной на запись.
+
+    В докере самая частая причина «unable to open database file» — том ./instance,
+    владелец которого не совпадает с пользователем внутри контейнера (uid 10001).
+    Поэтому падаем сразу и с понятным текстом, а не посреди работы.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / '.write-test'
+        probe.write_text('ok', encoding='utf-8')
+        probe.unlink()
+    except OSError as e:
+        raise RuntimeError(
+            f'Нет доступа на запись в {path} ({e}).\n'
+            'Если это Docker: sudo chown -R 10001:10001 ./instance '
+            '(или смонтируй именованный том вместо bind-mount).'
+        ) from e
+
+
+_ensure_instance_dir(INSTANCE_DIR)
 
 
 def _env(name: str, default: str) -> str:

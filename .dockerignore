@@ -1,0 +1,14 @@
+# Что НЕ кладём в образ: секреты, база, локальное окружение, мусор.
+.git
+.gitignore
+.env
+venv/
+.venv/
+instance/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.zip
+*.tar.gz
+tools/pack.ps1
+start.bat
