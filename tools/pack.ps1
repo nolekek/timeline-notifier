@@ -20,7 +20,7 @@ if (-not $OutPath) {
 }
 
 $skipDirs = @('venv', '.venv', 'instance', '__pycache__', '.git', '.idea', '.vscode',
-              '.pytest_cache', 'env')
+              '.pytest_cache', 'env', '.dsh')
 $skipFiles = @('.env', "$projectName.zip", '*.pyc')
 
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("tl-pack-" + [guid]::NewGuid().ToString('N'))
