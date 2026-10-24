@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TG_WS_PROXY_HOST=0.0.0.0 \
+    TG_WS_PROXY_PORT=1080
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+# Клонируем стабильный релиз tg-ws-proxy
+RUN git clone --depth 1 --branch v1.3.0 https://github.com/Flowseal/tg-ws-proxy.git . \
+ && pip install --no-cache-dir cryptography==43.0.1
+
+EXPOSE 1080
+
+CMD ["sh", "-c", "python -u proxy/tg_ws_proxy.py --host 0.0.0.0 --port 1080 --dc-ip 2:149.154.167.220 --dc-ip 4:149.154.167.220"]

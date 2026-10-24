@@ -57,3 +57,19 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+  # Опциональный встроенный сервис tg-ws-proxy (для серверов в РФ)
+  # Чтобы включить: в .env раскомментируй TELEGRAM_PROXY=socks5h://tg-proxy:1080
+  # и запускай: docker compose --profile proxy up -d --build
+  tg-proxy:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tgproxy
+    image: timeline-tg-proxy:latest
+    container_name: timeline-tg-proxy
+    restart: unless-stopped
+    profiles: ["proxy"]
+    extra_hosts:
+      - "api.telegram.org:149.154.167.220"
+    ports:
+      - "127.0.0.1:1080:1080"
