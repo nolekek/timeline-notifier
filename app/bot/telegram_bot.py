@@ -233,21 +233,41 @@ class TelegramBot:
         }
 
     @staticmethod
-    def _schedule_keyboard(group_name: str, offset_weeks: int = 0) -> dict:
-        nav = []
-        if offset_weeks > 0:
-            nav.append({'text': '◀ Прошлая', 'callback_data': f'sch|today|{offset_weeks-1}'})
-        nav.append({'text': '📍 Сегодня' if offset_weeks == 0 else f'📅 нед.+{offset_weeks}',
-                    'callback_data': 'sch|today|0'})
-        nav.append({'text': 'Следующая ▶', 'callback_data': f'sch|today|{offset_weeks+1}'})
+    def _schedule_keyboard(group_name: str, mode: str = 'today', offset_weeks: int = 0) -> dict:
+        btn_today = {
+            'text': '• Сегодня •' if mode == 'today' and offset_weeks == 0 else '📍 Сегодня',
+            'callback_data': 'sch|today|0'
+        }
+        btn_tomorrow = {
+            'text': '• Завтра •' if mode == 'tomorrow' else '⏩ Завтра',
+            'callback_data': 'sch|tomorrow|0'
+        }
+        btn_week = {
+            'text': '• Вся неделя •' if mode == 'week' and offset_weeks == 0 else '📆 Вся неделя',
+            'callback_data': 'sch|week|0'
+        }
+
+        prev_offset = offset_weeks - 1
+        next_offset = offset_weeks + 1
+
+        if mode == 'week':
+            week_label = 'Текущая нед.' if offset_weeks == 0 else f'Неделя {offset_weeks:+d}'
+            nav_row = [
+                {'text': '◀ Пред. неделя', 'callback_data': f'sch|week|{prev_offset}'},
+                {'text': f'• {week_label} •', 'callback_data': f'sch|week|{offset_weeks}'},
+                {'text': 'След. неделя ▶', 'callback_data': f'sch|week|{next_offset}'},
+            ]
+        else:
+            nav_row = [
+                {'text': '◀ Пред. неделя', 'callback_data': 'sch|week|-1'},
+                {'text': '🔄 Обновить', 'callback_data': f'sch|refresh|{offset_weeks}'},
+                {'text': 'След. неделя ▶', 'callback_data': 'sch|week|1'},
+            ]
 
         return {
             'inline_keyboard': [
-                [{'text': '📍 Сегодня', 'callback_data': 'sch|today|0'},
-                 {'text': '⏩ Завтра', 'callback_data': 'sch|tomorrow|0'}],
-                nav,
-                [{'text': '📆 Вся неделя', 'callback_data': f'sch|week|{offset_weeks}'},
-                 {'text': '🔄 Обновить', 'callback_data': 'sch|refresh|0'}],
+                [btn_today, btn_tomorrow, btn_week],
+                nav_row,
                 [{'text': f'👥 Группа: {group_name}', 'callback_data': 'change_group'}],
             ]
         }
@@ -428,10 +448,12 @@ class TelegramBot:
             text = (f"⚠️ Не удалось загрузить расписание для группы <b>{html.escape(group)}</b>.\n"
                     f"Причина: <code>{html.escape(str(e))}</code>")
 
-        keyboard = self._schedule_keyboard(group, offset_weeks)
+        keyboard = self._schedule_keyboard(group, mode=mode, offset_weeks=offset_weeks)
         if message_id:
             if not self.edit_message(chat_id, message_id, text, keyboard):
-                self.send_message(chat_id, text, reply_markup=keyboard)
+                # Если edit_message не смог изменить (например, удалено пользователем)
+                if self._last_error and 'not modified' not in self._last_error.lower():
+                    self.send_message(chat_id, text, reply_markup=keyboard)
         else:
             self.send_message(chat_id, text, reply_markup=keyboard)
 
@@ -471,6 +493,7 @@ class TelegramBot:
             canonical = upper_map[canonical].upper()
 
         user.group_name = canonical
+        user.group_manually_set = True
         user.state = 'ready' if user.is_registered else 'login'
         db.session.commit()
         self.send_message(
@@ -675,7 +698,6 @@ class TelegramBot:
 
         # Действия с расписанием доступны всегда!
         if data.startswith('sch|'):
-            self.answer_callback(cb_id)
             parts = data.split('|')
             mode = parts[1] if len(parts) > 1 else 'today'
             offset_weeks = 0
@@ -687,6 +709,10 @@ class TelegramBot:
             force_refresh = (mode == 'refresh')
             if force_refresh:
                 mode = 'today'
+                self.answer_callback(cb_id, 'Расписание обновлено 🔄')
+            else:
+                self.answer_callback(cb_id)
+
             self._cmd_schedule(user, chat_id, mode=mode, force_refresh=force_refresh,
                                message_id=message_id, offset_weeks=offset_weeks)
             return

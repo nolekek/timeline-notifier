@@ -29,6 +29,8 @@ def _auto_migrate():
                 existing_cols = {row[1] for row in res}
                 if 'group_name' not in existing_cols:
                     conn.execute(text("ALTER TABLE bot_user ADD COLUMN group_name VARCHAR(50) DEFAULT 'МКТ-2531'"))
+                if 'group_manually_set' not in existing_cols:
+                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN group_manually_set BOOLEAN DEFAULT 0"))
                 if 'session_cookies' not in existing_cols:
                     conn.execute(text("ALTER TABLE bot_user ADD COLUMN session_cookies TEXT"))
                 if 'schedule_notify' not in existing_cols:

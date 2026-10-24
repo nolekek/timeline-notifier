@@ -282,18 +282,59 @@ def format_day_schedule(day: dict, group_name: str, note: str = "") -> str:
     return "\n".join(lines)
 
 
-def _week_window(today: date, offset_weeks: int) -> tuple[date, date]:
-    """Понедельник–воскресенье недели, сдвинутой на offset_weeks от сегодняшней."""
-    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset_weeks)
+def format_day_compact(day: dict) -> str:
+    """Компактный формат дня для недельного расписания (чтобы не превышать лимит сообщения)."""
+    d_obj: Optional[date] = day.get('date')
+    if d_obj:
+        weekday_full = RU_WEEKDAYS.get(d_obj.weekday(), day.get('weekday_short', ''))
+        day_hdr = f"📅 <b>{_esc(day.get('day_title', ''))} ({weekday_full})</b>"
+    else:
+        day_hdr = f"📅 <b>{_esc(day.get('day_title', ''))}</b>"
+
+    lessons = day.get('lessons', [])
+    if not lessons:
+        return f"{day_hdr}\n<i>Пар нет 🎉</i>"
+
+    lines = [day_hdr]
+    for l in lessons:
+        loc = []
+        if l['classroom']:
+            # Упростим длинные названия: 'УК М11: Спортивный зал' -> 'Спортивный зал'
+            room = l['classroom'].replace('УК М11: ', '').replace('Учебная аудитория ', 'ауд. ')
+            loc.append(room)
+        if l['subgroup']:
+            loc.append(l['subgroup'])
+        loc_str = f" ({', '.join(loc)})" if loc else ""
+        teacher_str = f" · <i>{_esc(l['teacher'])}</i>" if l['teacher'] else ""
+        lines.append(f"⏰ <b>{_esc(l['time'])}</b> — {_esc(l['subject'])}{_esc(loc_str)}{teacher_str}")
+    return "\n".join(lines)
+
+
+def _week_window(today: date, offset_weeks: int, smart_weekend: bool = True) -> tuple[date, date]:
+    """Понедельник–воскресенье недели, сдвинутой на offset_weeks от сегодняшней.
+
+    В субботу и воскресенье при offset_weeks == 0 по умолчанию открывает
+    следующую учебную неделю (начиная со следующего понедельника).
+    """
+    shift = 0
+    if smart_weekend and today.weekday() in (5, 6) and offset_weeks == 0:
+        shift = 7 - today.weekday()
+    base = today + timedelta(days=shift)
+    monday = base - timedelta(days=base.weekday()) + timedelta(weeks=offset_weeks)
     return monday, monday + timedelta(days=6)
 
 
-def _format_week(week_days: list[dict], group_name: str, monday: date, sunday: date) -> str:
-    sep = "\n" + ("=" * 16) + "\n"
-    blocks = [f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
-              f"{_esc(group_name)}</b>\n"]
-    blocks.extend(format_day_schedule(d, group_name) + sep for d in week_days)
-    return "".join(blocks)[: -len(sep)]
+def _format_week(week_days: list[dict], group_name: str, monday: date, sunday: date,
+                 is_smart_next: bool = False) -> str:
+    note = " <i>(следующая учебная неделя)</i>" if is_smart_next else ""
+    header = (f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
+              f"{_esc(group_name)}</b>{note}\n")
+    sep = "\n\n"
+    body = sep.join(format_day_compact(d) for d in week_days)
+    full = header + "\n" + body
+    if len(full) > 4000:
+        return full[:3990] + "\n..."
+    return full
 
 
 def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool = False,
@@ -304,10 +345,8 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
     - 'today': расписание на сегодня, а если сегодня пар нет — на ближайший учебный день.
     - 'tomorrow': расписание на завтра.
     - 'week': расписание на текущую неделю (или сдвинутую на offset_weeks).
-    offset_weeks != 0 в режиме 'today' показывает всю неделю со сдвигом —
-    это режим кнопок «Прошлая/Следующая неделя».
     """
-    offset_weeks = max(0, int(offset_weeks or 0))
+    offset_weeks = int(offset_weeks or 0)
     days = get_group_schedule(group_name, force_refresh=force_refresh)
     if not days:
         return (f"<b>📅 Расписание — {_esc(group_name)}</b>\n\n"
@@ -317,14 +356,15 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
     today = date.today()
     tomorrow = today + timedelta(days=1)
 
-    if mode == 'week' or (mode == 'today' and offset_weeks > 0):
-        monday, sunday = _week_window(today, offset_weeks)
+    if mode == 'week' or (mode == 'today' and offset_weeks != 0):
+        is_smart_next = (today.weekday() in (5, 6) and offset_weeks == 0)
+        monday, sunday = _week_window(today, offset_weeks, smart_weekend=True)
         week_days = [d for d in days if d['date'] and monday <= d['date'] <= sunday]
         if not week_days:
             return (f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
                     f"{_esc(group_name)}</b>\n\n"
                     "<i>На эту неделю пар не найдено (каникулы или сайт не отдаёт расписание).</i>")
-        return _format_week(week_days, group_name, monday, sunday)
+        return _format_week(week_days, group_name, monday, sunday, is_smart_next=is_smart_next)
 
     if mode == 'today':
         # Ищем точный день

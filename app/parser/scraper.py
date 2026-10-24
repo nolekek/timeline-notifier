@@ -184,3 +184,24 @@ class TimelineScraper:
 
         logger.info(f"Обработано работ: {len(works)}")
         return works
+
+
+def extract_group_from_works(works: list[dict]) -> str | None:
+    """Извлекает название академической группы из списка работ (поле EduModuleName).
+
+    В Timeline название предмета обычно имеет вид:
+    'Психология (Воробьева Марина Анатольевна) (МКТ-2531)' -> 'МКТ-2531'
+    """
+    for w in works:
+        disc = (w.get('discipline') or '').strip()
+        if not disc:
+            continue
+        # Ищем скобки в конце строки: (МКТ-2531)
+        m = re.search(r'\(([-А-Яа-яA-Za-z0-9 ]+)\)\s*$', disc)
+        if m:
+            candidate = m.group(1).strip().upper()
+            # Проверяем, что это похоже на группу (есть цифры и буквы)
+            if any(c.isdigit() for c in candidate) and any(c.isalpha() for c in candidate) and len(candidate) >= 3:
+                return candidate
+    return None
+

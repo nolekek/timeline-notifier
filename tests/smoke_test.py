@@ -311,19 +311,27 @@ with app.app_context():
     assert '&amp;' in rendered
 
     # 7.5 навигация по неделям реально сдвигает окно дат
-    this_monday = datetime.now().date() - timedelta(days=datetime.now().date().weekday())
-    fake_days = [{'date': this_monday + timedelta(days=i), 'day_title': f'день {i}',
+    base_monday = sched_mod._week_window(datetime.now().date(), 0)[0]
+    fake_days = [{'date': base_monday + timedelta(days=i), 'day_title': f'день {i}',
                   'weekday_short': 'Пн', 'lessons': []} for i in range(14)]
     orig_fetch = sched_mod.get_group_schedule
     sched_mod.get_group_schedule = lambda *a, **kw: fake_days
     try:
         week0 = get_schedule_view('МКТ-2531', mode='week', offset_weeks=0)
         week1 = get_schedule_view('МКТ-2531', mode='today', offset_weeks=1)
-        assert this_monday.strftime('%d.%m') in week0
-        assert (this_monday + timedelta(days=7)).strftime('%d.%m') in week1
-        assert this_monday.strftime('%d.%m') not in week1
+        assert base_monday.strftime('%d.%m') in week0
+        assert (base_monday + timedelta(days=7)).strftime('%d.%m') in week1
+        assert base_monday.strftime('%d.%m') not in week1
     finally:
         sched_mod.get_group_schedule = orig_fetch
+
+    # 7.6 автоопределение группы из работ Timeline
+    from app.parser.scraper import extract_group_from_works
+    test_works = [
+        {'discipline': 'Безопасность жизнедеятельности (Сарапульцева Л.А.) (МКТ-2531)'},
+        {'discipline': 'Психология (Воробьева М.А.) (МКТ-2531)'},
+    ]
+    assert extract_group_from_works(test_works) == 'МКТ-2531'
 
     # 7.6 окно ежедневных уведомлений: с настроенного времени, один раз в день
     now10 = datetime.now().replace(hour=10, minute=30)

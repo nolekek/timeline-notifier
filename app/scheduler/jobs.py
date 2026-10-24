@@ -229,6 +229,13 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
         status_changes = []
 
         if works:
+            if not getattr(user, 'group_manually_set', False):
+                from app.parser.scraper import extract_group_from_works
+                detected_group = extract_group_from_works(works)
+                if detected_group and detected_group != user.group_name:
+                    logger.info(f"Автоматически определена группа пользователя {user.id}: {detected_group} (была: {user.group_name})")
+                    user.group_name = detected_group
+
             seen_ids = set()
             for w in works:
                 seen_ids.add(w['external_id'])

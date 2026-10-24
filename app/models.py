@@ -41,6 +41,8 @@ class User(db.Model):
 
     # Академическая группа для расписания (по умолчанию МКТ-2531)
     group_name = db.Column(db.String(50), default='МКТ-2531')
+    # Была ли группа установлена пользователем вручную (если False — автоопределяется из ЭИОС)
+    group_manually_set = db.Column(db.Boolean, default=False)
     # Сессионные куки для повторного использования (ускорение проверок и защита от блокировок)
     session_cookies = db.Column(db.Text)
 
