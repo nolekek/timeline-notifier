@@ -53,7 +53,7 @@ RU_WEEKDAYS = {
 # Кэш в памяти: {key: (timestamp, data)}
 _SCHEDULE_CACHE: dict[str, tuple[float, list[dict]]] = {}
 _GROUPS_CACHE: tuple[float, list[str]] = (0.0, [])
-CACHE_TTL_SECONDS = 600  # 10 минут
+CACHE_TTL_SECONDS = 7200  # 2 часа (экономия CPU, RAM и трафика на ARM-сервере)
 
 
 def _parse_ru_date(day_text: str, reference_date: Optional[date] = None) -> Optional[date]:

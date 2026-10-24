@@ -569,48 +569,105 @@ def start_scheduler(app):
     global _scheduler
     if _scheduler is not None:
         return _scheduler
-    tick = int(app.config.get('SCHEDULER_TICK', 60))
+
+    # Отключаем спам в логи о каждом тике APScheduler (бережет flash/SD-карту и CPU)
+    logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
+
+    low_power = str(app.config.get('LOW_POWER_MODE', 'true')).lower() in ('1', 'true', 'yes')
     _scheduler = BackgroundScheduler(daemon=True)
-    _scheduler.add_job(
-        func=check_all_users,
-        args=[app],
-        trigger='interval',
-        seconds=tick,
-        id='check_all_users',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    _scheduler.add_job(
-        func=send_daily_digest,
-        args=[app],
-        trigger='interval',
-        seconds=60,
-        id='daily_digest',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    _scheduler.add_job(
-        func=send_schedule_notify,
-        args=[app],
-        trigger='interval',
-        seconds=60,
-        id='schedule_notify',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
-    _scheduler.add_job(
-        func=check_schedule_changes,
-        args=[app],
-        trigger='interval',
-        seconds=3600,  # раз в час
-        id='schedule_changes',
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+
+    if low_power:
+        # Режим Low Power Max: проверки 3 раза в день (8:00, 14:00, 20:00), CPU спит 99% времени
+        check_hours = app.config.get('CHECK_HOURS', '8,14,20')
+        _scheduler.add_job(
+            func=check_all_users,
+            args=[app, True],  # force=True, чтобы точно проверить всех по расписанию
+            trigger='cron',
+            hour=check_hours,
+            minute=0,
+            id='check_all_users',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        # Утренний дайджест дедлайнов (проверка раз в 10 минут)
+        _scheduler.add_job(
+            func=send_daily_digest,
+            args=[app],
+            trigger='interval',
+            minutes=10,
+            id='daily_digest',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        # Вечернее расписание на завтра (проверка раз в 10 минут)
+        _scheduler.add_job(
+            func=send_schedule_notify,
+            args=[app],
+            trigger='interval',
+            minutes=10,
+            id='schedule_notify',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        # Мониторинг изменений расписания (2 раза в день: утром и вечером)
+        _scheduler.add_job(
+            func=check_schedule_changes,
+            args=[app],
+            trigger='cron',
+            hour='7,19',
+            minute=0,
+            id='schedule_changes',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(f"Планировщик запущен в режиме Low-Power: проверка дедлайнов в {check_hours}:00")
+    else:
+        tick = int(app.config.get('SCHEDULER_TICK', 60))
+        _scheduler.add_job(
+            func=check_all_users,
+            args=[app],
+            trigger='interval',
+            seconds=tick,
+            id='check_all_users',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        _scheduler.add_job(
+            func=send_daily_digest,
+            args=[app],
+            trigger='interval',
+            seconds=60,
+            id='daily_digest',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        _scheduler.add_job(
+            func=send_schedule_notify,
+            args=[app],
+            trigger='interval',
+            seconds=60,
+            id='schedule_notify',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        _scheduler.add_job(
+            func=check_schedule_changes,
+            args=[app],
+            trigger='interval',
+            seconds=3600,
+            id='schedule_changes',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        logger.info(f"Планировщик запущен: тик {tick} сек")
+
     _scheduler.start()
-    logger.info(f"Планировщик запущен: тик {tick} сек")
     return _scheduler

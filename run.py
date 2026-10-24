@@ -24,9 +24,9 @@ if __name__ == '__main__':
         try:
             from waitress import serve
             import logging
-            logging.getLogger('waitress').setLevel(logging.INFO)
-            print(f'Starting Waitress on {host}:{port}')
-            serve(app, host=host, port=port, threads=4)
+            logging.getLogger('waitress').setLevel(logging.WARNING)
+            print(f'Starting Waitress on {host}:{port} (threads=2)')
+            serve(app, host=host, port=port, threads=2)
         except ImportError:
             print('Waitress не установлен (pip install waitress). Запускаю Werkzeug.')
             app.run(host=host, port=port, use_reloader=False, threaded=True)
