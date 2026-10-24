@@ -51,9 +51,10 @@ class Config:
     TIMELINE_LOGIN_URL = _env('TIMELINE_LOGIN_URL', 'https://eios.rsvpu.ru/Account/Login')
     TIMELINE_WORKS_URL = _env('TIMELINE_WORKS_URL', 'https://timeline.rsvpu.ru/StudentWork/Send')
     TIMELINE_GRID_URL = _env('TIMELINE_GRID_URL', 'https://timeline.rsvpu.ru/StudentWork/SendGrid')
-    # Проверка сертификатов УрГПУ: по умолчанию ВКЛЮЧЕНА (сертификаты у сайтов валидные).
-    # Логин/пароль студентов ходят по этому соединению — отключать только осознанно.
-    TIMELINE_VERIFY_SSL = _env('TIMELINE_VERIFY_SSL', 'true').lower() in ('1', 'true', 'yes')
+    # Проверка SSL-сертификатов вуза: по умолчанию false, так как у российских
+    # вузов (РГППУ/УрГПУ) сертификаты Минцифры/внутренние, которые не входят в стандартный
+    # бандл certifi в Linux/Docker. При желании можно включить: TIMELINE_VERIFY_SSL=true
+    TIMELINE_VERIFY_SSL = _env('TIMELINE_VERIFY_SSL', 'false').lower() in ('1', 'true', 'yes')
     # Сохранять сырые страницы/ответы SendGrid в instance/debug — для починки парсера
     TIMELINE_DEBUG_DUMP = _env('TIMELINE_DEBUG_DUMP', 'false').lower() in ('1', 'true', 'yes')
     TIMELINE_DEBUG_DIR = str(INSTANCE_DIR / 'debug')
