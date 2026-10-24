@@ -26,8 +26,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# запуск не от root; uid фиксирован (10001), чтобы на сервере можно было
-# сделать chown -R 10001:10001 ./instance
+# Пользователь внутри образа — uid 10001 (используется, если в docker-compose.yml
+# не задан `user:`). По умолчанию compose запускает контейнер от APP_UID/APP_GID
+# из .env (обычно 1000 — владелец папки ./instance на хосте), чтобы база
+# писалась без chown.
 RUN useradd --create-home --uid 10001 app \
  && mkdir -p /app/instance \
  && chown -R app:app /app

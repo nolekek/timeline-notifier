@@ -21,19 +21,36 @@ if (-not $OutPath) {
 
 $skipDirs = @('venv', '.venv', 'instance', '__pycache__', '.git', '.idea', '.vscode',
               '.pytest_cache', 'env', '.dsh')
-$skipFiles = @('.env', "$projectName.zip", '*.pyc')
+$skipFiles = @('.env', "$projectName.zip", '*.pyc', 'server.env', 'adminpw.txt')
+
+# Хвосты, которые нужны ТОЛЬКО на этой машине и в архиве для Андрея лишние:
+# tools/bin/ — шимы docker + lazydocker.exe (12.7 МБ!), tools/wsl-*.sh — обвязка WSL,
+# docs/docker-wsl-local.md — инструкция про локальный WSL, на сервере не нужна.
+$skipRelPrefixes = @('tools\bin\', 'tools\wsl-')
+$skipRelFiles = @('docs\docker-wsl-local.md')
 
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("tl-pack-" + [guid]::NewGuid().ToString('N'))
 $dest = Join-Path $stage $projectName
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
 $copied = New-Object System.Collections.Generic.List[string]
+$localOnly = New-Object System.Collections.Generic.List[string]
 
 Get-ChildItem -Path $root -Recurse -File -Force | ForEach-Object {
     $rel = $_.FullName.Substring($root.Length + 1)
     $parts = $rel -split '[\\/]'
     if ($parts | Where-Object { $skipDirs -contains $_ }) { return }
-    if ($skipFiles -contains $parts[-1]) { return }
+    # -like понимает wildcard'ы (*.pyc); -contains сравнивал бы буквально
+    if ($skipFiles | Where-Object { $parts[-1] -like $_ }) { return }
+    if ($skipRelFiles -contains $rel) { $localOnly.Add($rel); return }
+    $skipThis = $false
+    foreach ($prefix in $skipRelPrefixes) {
+        if ($rel.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $skipThis = $true
+            break
+        }
+    }
+    if ($skipThis) { $localOnly.Add($rel); return }
 
     $target = Join-Path $dest $rel
     New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
@@ -49,9 +66,22 @@ Write-Host "Архив: $OutPath"
 Write-Host ("Файлов внутри: {0} ({1:N1} КБ)" -f $copied.Count,
             ((Get-Item $OutPath).Length / 1KB))
 
-$leaks = $copied | Where-Object { $_ -match '(^|\\)\.env$|instance\\|venv\\|__pycache__' }
+if ($localOnly.Count) {
+    Write-Host ("Пропущено (нужно только на этой машине): {0}" -f ($localOnly -join ', '))
+}
+
+$leaks = $copied | Where-Object {
+    $_ -match '(^|\\)\.env$' -or
+    $_ -match '(^|\\)instance\\' -or
+    $_ -match '(^|\\)venv\\' -or
+    $_ -match '__pycache__' -or
+    $_ -match '\.db$' -or
+    $_ -match 'lazydocker\.exe$' -or
+    $_ -match 'server\.env$' -or
+    $_ -match 'adminpw\.txt$'
+}
 if ($leaks) {
-    Write-Warning ("В архив попали лишние файлы: " + ($leaks -join ', '))
+    Write-Warning "Extra files found in archive: $($leaks -join ', ')"
 } else {
-    Write-Host 'OK: секретов (.env), базы (instance/) и venv в архиве нет'
+    Write-Host 'OK: no secrets, no db, no instance, no venv, no lazydocker in archive'
 }

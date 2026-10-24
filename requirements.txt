@@ -8,3 +8,5 @@ python-dotenv==1.0.1
 PySocks==1.7.1
 # Шифрование паролей ЭИОС (Fernet). Если не ставится — пароли хранятся обфусцированными.
 cryptography==43.0.1
+# Production WSGI сервер (чистый Python, отлично работает на ARM64/x86_64)
+waitress==3.0.0

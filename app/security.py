@@ -16,8 +16,11 @@ _XOR_PREFIX = 'obf:v1:'
 
 
 def _key_material() -> bytes:
-    return (os.getenv('CRED_KEY') or os.getenv('SECRET_KEY')
-            or 'dev-secret-change-me').encode('utf-8')
+    key = os.getenv('CRED_KEY') or os.getenv('SECRET_KEY')
+    if not key:
+        logger.error('CRED_KEY/SECRET_KEY не заданы — пароли шифруются известным всем ключом!')
+        key = 'dev-secret-change-me'
+    return key.encode('utf-8')
 
 
 def _key() -> bytes:

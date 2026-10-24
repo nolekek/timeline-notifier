@@ -4,7 +4,8 @@
 <section class="card">
     <h2>{{ user.title }} <span class="muted">chat_id {{ user.chat_id }}</span></h2>
     <p>
-        Логин ЭИОС: <code>{{ user.timeline_login or '—' }}</code> ·
+        Группа расписания: <b>{{ user.current_group }}</b> ·
+        логин ЭИОС: <code>{{ user.timeline_login or '—' }}</code> ·
         пароль: {{ 'сохранён' if user.password_enc else 'нет' }} ·
         добавлен: {{ user.created_at.strftime('%d.%m.%Y %H:%M') if user.created_at else '—' }} ·
         последняя проверка: {{ user.last_check_at.strftime('%d.%m.%Y %H:%M') if user.last_check_at else '—' }}
@@ -12,10 +13,14 @@
     {% if user.last_error %}<p class="flash flash-error">Ошибка: {{ user.last_error }}</p>{% endif %}
 
     <form method="POST" action="{{ url_for('web.user_update', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
         <label class="checkbox"><input type="checkbox" name="is_active" value="1"
             {% if user.is_active %}checked{% endif %}> Активен (участвует в автопроверке)</label>
         <label class="checkbox"><input type="checkbox" name="notify_enabled" value="1"
             {% if user.notify_enabled %}checked{% endif %}> Присылать уведомления</label>
+        <label>Академическая группа для расписания (uspu.ru)
+            <input type="text" name="group_name" value="{{ user.current_group }}" placeholder="МКТ-2531">
+        </label>
         <label>Свой интервал, мин (пусто/0 — общий {{ default_interval }} мин)
             <input type="number" name="interval_min" min="0"
                    value="{{ (user.check_interval // 60) if user.check_interval else '' }}">
@@ -25,13 +30,16 @@
 
     <div class="actions">
         <form method="POST" action="{{ url_for('web.user_check', user_id=user.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <button type="submit">Проверить сейчас</button>
         </form>
         <form method="POST" action="{{ url_for('web.user_test', user_id=user.id) }}" class="inline">
+            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <button type="submit">Тест Telegram</button>
         </form>
         <form method="POST" action="{{ url_for('web.user_delete', user_id=user.id) }}" class="inline"
               onsubmit="return confirm('Удалить пользователя и все его работы?')">
+            <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
             <button type="submit" class="danger">Удалить</button>
         </form>
     </div>
@@ -50,7 +58,7 @@
                 <td>{{ w.discipline }}</td>
                 <td>{{ w.deadline or '—' }}</td>
                 <td>
-                    {% if w.is_overdue %}<span class="badge-overdue">💀 Проёбано</span>
+                    {% if w.is_overdue %}<span class="badge-overdue">💀 Просрочено</span>
                     {% elif w.status == 'Не отправлена' %}<span class="status-not-sent">{{ w.status }}</span>
                     {% else %}{{ w.status }}{% endif %}
                 </td>

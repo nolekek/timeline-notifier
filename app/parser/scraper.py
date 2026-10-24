@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
+from bs4 import BeautifulSoup
 from app.parser.auth import TimelineAuth
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,19 @@ class TimelineScraper:
         resp = session.get(self.send_url, timeout=20,
                            verify=self.auth.verify_ssl)
         resp.raise_for_status()
+
+        # 1. Парсинг через BeautifulSoup
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        sel = soup.find('select', {'name': re.compile(r'SemesterId', re.I)})
+        if sel:
+            opt = sel.find('option', selected=True)
+            if opt and opt.get('value', '').isdigit():
+                return int(opt['value'])
+            first = sel.find('option')
+            if first and first.get('value', '').isdigit():
+                return int(first['value'])
+
+        # 2. Фолбэк на регулярное выражение
         m = re.search(
             r'<select[^>]*name="SemesterId"[^>]*>.*?'
             r'<option[^>]*selected[^>]*value="(\d+)"',
@@ -82,48 +96,66 @@ class TimelineScraper:
             return []
         logger.info(f"Используется semesterId={self.semester_id}")
 
-        params = {
-            'semesterId': self.semester_id,
-            'EduModuleId': '',
-            'StudWorksReceptionId': '',
-            'hideAcceptedCheckbox': 'false',
-            '_search': 'false',
-            'nd': '1',
-            'rows': '100',
-            'page': '1',
-            'sidx': 'Deadline',
-            'sord': 'asc',
-        }
         headers = {
             'X-Requested-With': 'XMLHttpRequest',
             'Referer': self.send_url,
             'Accept': 'application/json, text/javascript, */*; q=0.01',
         }
-        try:
-            resp = session.get(self.grid_url, params=params, headers=headers,
-                               timeout=20, verify=self.auth.verify_ssl)
-            resp.raise_for_status()
-        except Exception as e:
-            logger.error(f"Ошибка запроса SendGrid: {e}")
-            return []
 
-        dump_path = self._dump(resp.text)
-        if dump_path:
-            logger.info(f"Сырой ответ SendGrid сохранён: {dump_path}")
+        all_rows = []
+        page = 1
+        max_pages = 5  # Защита от бесконечного цикла, обычно 1-2 страницы
 
-        try:
-            data = resp.json()
-        except ValueError:
-            logger.error(f"SendGrid вернул не JSON. Ответ: {resp.text[:300]!r}")
-            return []
+        while page <= max_pages:
+            params = {
+                'semesterId': self.semester_id,
+                'EduModuleId': '',
+                'StudWorksReceptionId': '',
+                'hideAcceptedCheckbox': 'false',
+                '_search': 'false',
+                'nd': str(page),
+                'rows': '100',
+                'page': str(page),
+                'sidx': 'Deadline',
+                'sord': 'asc',
+            }
+            try:
+                resp = session.get(self.grid_url, params=params, headers=headers,
+                                   timeout=20, verify=self.auth.verify_ssl)
+                resp.raise_for_status()
+            except Exception as e:
+                logger.error(f"Ошибка запроса SendGrid (стр. {page}): {e}")
+                break
 
-        rows = data.get('Rows', [])
-        logger.info(f"Всего записей в ответе: {len(rows)} "
-                    f"(Records={data.get('Records')})")
+            if page == 1:
+                dump_path = self._dump(resp.text)
+                if dump_path:
+                    logger.info(f"Сырой ответ SendGrid сохранён: {dump_path}")
+
+            try:
+                data = resp.json()
+            except ValueError:
+                logger.error(f"SendGrid вернул не JSON. Ответ: {resp.text[:300]!r}")
+                break
+
+            rows = data.get('Rows', [])
+            all_rows.extend(rows)
+
+            total_pages = data.get('Total', 1)
+            try:
+                total_pages = int(total_pages)
+            except (ValueError, TypeError):
+                total_pages = 1
+
+            if page >= total_pages or not rows:
+                break
+            page += 1
+
+        logger.info(f"Всего записей в ответе: {len(all_rows)}")
 
         now = datetime.now()
         works = []
-        for row in rows:
+        for row in all_rows:
             work_id = str(row.get('Id', '')).strip()
             if not work_id or not work_id.isdigit():
                 continue

@@ -13,9 +13,11 @@
             <nav>
                 <a href="{{ url_for('web.index') }}">Пользователи</a>
                 <form method="POST" action="{{ url_for('web.run_check_all') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                     <button type="submit" class="link-btn">Проверить всех</button>
                 </form>
                 <form method="POST" action="{{ url_for('web.bot_restart') }}" class="inline">
+                    <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
                     <button type="submit" class="link-btn">Перезапустить бота</button>
                 </form>
             </nav>

@@ -8,11 +8,12 @@ core-цикл планировщика (включая честный разбо
 БД — временная (instance/smoke-test.db, удаляется на выходе).
 """
 import atexit
+import base64
 import os
 import random
 import sys
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 # Шутки бота выбираются случайно — фиксируем сид, чтобы прогон был воспроизводимым
@@ -54,12 +55,14 @@ os.environ.setdefault('CRED_KEY', 'smoke-test-key')
 from app import create_app  # noqa: E402
 import app.bot.telegram_bot as bot_mod  # noqa: E402
 import app.parser.auth as auth_mod  # noqa: E402
+import app.parser.schedule as sched_mod  # noqa: E402
 import app.scheduler.jobs as jobs_mod  # noqa: E402
 from app.bot.jokes import JOKES  # noqa: E402
-from app.bot.telegram_bot import BTN_CHECK, BTN_STATUS, SORT_DEADLINE, TelegramBot  # noqa: E402
+from app.bot.telegram_bot import BTN_CHECK, BTN_SCHEDULE, BTN_STATUS, SORT_DEADLINE, TelegramBot  # noqa: E402
 from app.models import db, User, WorkItem  # noqa: E402
 from app.parser.auth import REASON_NETWORK, REASON_REJECTED  # noqa: E402
-from app.scheduler.jobs import _check_deadline_reminders  # noqa: E402
+from app.parser.schedule import format_day_schedule, get_schedule_view, parse_schedule_html  # noqa: E402
+from app.scheduler.jobs import _check_deadline_reminders, _due_daily  # noqa: E402
 from app.security import decrypt, encrypt  # noqa: E402
 
 app = create_app()
@@ -202,7 +205,7 @@ with app.app_context():
                   is_registered=True, state='ready')
     db.session.add(user_p)
     db.session.commit()
-    base = datetime.utcnow()
+    base = datetime.now(timezone.utc).replace(tzinfo=None)
     for i in range(6):
         db.session.add(WorkItem(user_id=user_p.id, external_id=f'p{i}',
                                 discipline=f'Работа {i}', deadline=soon,
@@ -215,13 +218,13 @@ with app.app_context():
     assert 'стр. 1/2' in page1 and '▰' in page1  # счётчик страниц и тупая полоска
     assert any(j in page1 for j in JOKES['status']), page1
     assert [b['callback_data'] for row in kb1['inline_keyboard'] for b in row] == [
-        'noop', 'st|new|2', 'st|dl|1'], kb1
+        'noop', 'st|new|2', 'st|dl|1', 'st_compact'], kb1
 
     page2, kb2 = bot._build_status_page(user_p, 2)
     assert 'Работа 4' in page2 and 'Работа 0' not in page2, page2
     assert any(j in page2 for j in JOKES['status_last']), page2
     assert [b['callback_data'] for row in kb2['inline_keyboard'] for b in row] == [
-        'st|new|1', 'noop', 'st|dl|1'], kb2
+        'st|new|1', 'noop', 'st|dl|1', 'st_compact'], kb2
 
     by_deadline, _ = bot._build_status_page(user_p, 1, SORT_DEADLINE)
     assert 'по срокам' in by_deadline
@@ -246,6 +249,106 @@ with app.app_context():
         'from': {'id': 555, 'first_name': 'P'},
     })
     assert any('Работа 4' in t for t in texts('editMessageText')), texts('editMessageText')
+
+    # 7.3 парсинг и команды динамического расписания (uspu.ru)
+    sample_rasp_html = """
+    <div class="rasp-item">
+        <span class="rasp-day">26 октября</span>
+        <div class="rasp-descr">
+            <div class="rasp-week">Пн</div>
+            <div class="rasp-item-inner">
+                <div class="rasp-para">
+                    <span class="para-time">08:30 - 10:00</span>
+                    <div class="rasp-desc">
+                        <p>Математический анализ (Лекции)<br>
+                            <span>Ауд. 201 УК М11<br>
+                            Преподаватель: Иванов Иван Иванович<br>
+                            Группа: МКТ-2531<br>
+                            подгруппа 1</span></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    """
+    days = parse_schedule_html(sample_rasp_html, reference_date=datetime(2026, 10, 24).date())
+    assert len(days) == 1
+    assert days[0]['lessons'][0]['subject'] == 'Математический анализ (Лекции)'
+    assert days[0]['lessons'][0]['time'] == '08:30 - 10:00'
+    assert 'Иванов' in days[0]['lessons'][0]['teacher']
+    assert '201' in days[0]['lessons'][0]['classroom']
+    assert 'подгруппа 1' in days[0]['lessons'][0]['subgroup']
+
+    reset_outbox()
+    bot._handle_message(msg(CHAT_A, BTN_SCHEDULE))
+    assert any('расписание' in t.lower() for t in texts()), texts()
+
+    # список групп подменяем — смоук-тест не должен ходить в сеть
+    sched_mod.get_available_groups = lambda force_refresh=False: ['МКТ-2531', 'МКТ-2541']
+    reset_outbox()
+    bot._handle_message(msg(CHAT_A, '/group мкт-2531'))  # любой регистр
+    assert user_a.group_name == 'МКТ-2531'
+    assert any('МКТ-2531' in t for t in texts()), texts()
+
+    # мусор отклоняется: формально невалидный — регуляркой, валидный, но
+    # несуществующий — сверкой со списком групп сайта
+    reset_outbox()
+    bot._handle_message(msg(CHAT_A, '/group <script>alert(1)</script>'))
+    assert any('1–50 символов' in t for t in texts()), texts()
+    reset_outbox()
+    bot._handle_message(msg(CHAT_A, '/group ААА-9999'))
+    assert any('нет в расписании' in t for t in texts()), texts()
+    assert user_a.group_name == 'МКТ-2531'  # не изменилась
+
+    # 7.4 текст расписания экранирован: сырые <>& с сайта не ломают Telegram HTML
+    evil_day = {'date': datetime.now().date(), 'day_title': '26 октября',
+                'weekday_short': 'Пн',
+                'lessons': [{'time': '08:30', 'subject': '<b>Инъекция</b> & Co',
+                             'classroom': 'Ауд <1>', 'teacher': 'Иванов <И.И.>',
+                             'subgroup': ''}]}
+    rendered = format_day_schedule(evil_day, 'МКТ-2531&"<x>')
+    assert '<b>Инъекция</b>' not in rendered and '&lt;b&gt;Инъекция&lt;/b&gt;' in rendered
+    assert '&amp;' in rendered
+
+    # 7.5 навигация по неделям реально сдвигает окно дат
+    this_monday = datetime.now().date() - timedelta(days=datetime.now().date().weekday())
+    fake_days = [{'date': this_monday + timedelta(days=i), 'day_title': f'день {i}',
+                  'weekday_short': 'Пн', 'lessons': []} for i in range(14)]
+    orig_fetch = sched_mod.get_group_schedule
+    sched_mod.get_group_schedule = lambda *a, **kw: fake_days
+    try:
+        week0 = get_schedule_view('МКТ-2531', mode='week', offset_weeks=0)
+        week1 = get_schedule_view('МКТ-2531', mode='today', offset_weeks=1)
+        assert this_monday.strftime('%d.%m') in week0
+        assert (this_monday + timedelta(days=7)).strftime('%d.%m') in week1
+        assert this_monday.strftime('%d.%m') not in week1
+    finally:
+        sched_mod.get_group_schedule = orig_fetch
+
+    # 7.6 окно ежедневных уведомлений: с настроенного времени, один раз в день
+    now10 = datetime.now().replace(hour=10, minute=30)
+    assert _due_daily(now10, '08:30', None) is True          # время пришло
+    assert _due_daily(now10, '10:31', None) is False         # ещё рано
+    assert _due_daily(now10, '10:30', now10.replace(hour=9)) is False  # уже слали
+    assert _due_daily(now10, '10:30', now10 - timedelta(days=1)) is True  # вчера не счёт
+    assert _due_daily(now10, 'мусор', None, default_hour=10, default_minute=0) is True
+    assert _due_daily(now10, '25:99', None) is True          # кривое время → дефолт 08:00
+
+    # 7.7 ручная проверка (send=False) не взводит флаги напоминаний
+    rem_user = User(chat_id='777', timeline_login='r.student', password_enc=encrypt('x'),
+                    is_registered=True, is_active=True, state='ready')
+    db.session.add(rem_user)
+    db.session.commit()
+    db.session.add(WorkItem(user_id=rem_user.id, external_id='r1',
+                            discipline='Горящая работа', deadline=soon,
+                            status='Не отправлена'))
+    db.session.commit()
+    rem_items = WorkItem.query.filter_by(user_id=rem_user.id).all()
+    _check_deadline_reminders(rem_items, send=False)
+    db.session.commit()
+    db.session.expire_all()
+    it = WorkItem.query.filter_by(user_id=rem_user.id).first()
+    assert it.reminder_24_sent is False, 'ручная проверка съела напоминание'
 
     # 8. ручная проверка правит одно сообщение вместо трёх
     reset_outbox()
@@ -350,16 +453,49 @@ with app.app_context():
     web_mod.check_all_users = lambda *a, **k: 0
     web_mod.check_user = lambda *a, **k: 'ok'
     client = app.test_client()
-    assert client.get('/').status_code == 200
+
+    # 11.1 healthcheck-эндпоинт жив, iCal за ним отдаётся
+    assert client.get('/ping').status_code == 200
+    ics = client.get(f'/export/ical/{user_b.id}')
+    assert ics.status_code == 200 and 'BEGIN:VCALENDAR' in ics.get_data(as_text=True)
+
+    # 11.2 POST без CSRF-токена отклоняется, с токеном — проходит
+    assert client.post('/run-check-all').status_code == 400
+    assert client.post('/settings', data={'check_interval': '300'}).status_code == 400
+    with client.session_transaction() as sess:
+        csrf = sess['csrf_token']
+
     assert client.get(f'/users/{user_b.id}').status_code == 200
     assert client.post('/settings', data={
+        'csrf_token': csrf,
         'telegram_bot_token': '0:test', 'check_interval': '300'}).status_code == 302
-    assert client.post('/run-check-all').status_code == 302
+    assert client.post('/run-check-all', data={'csrf_token': csrf}).status_code == 302
     assert client.post(f'/users/{user_b.id}/update',
-                       data={'is_active': '1', 'interval_min': '10'}).status_code == 302
-    assert client.post(f'/users/{user_b.id}/check').status_code == 302
+                       data={'csrf_token': csrf, 'is_active': '1',
+                             'interval_min': '10'}).status_code == 302
+    assert client.post(f'/users/{user_b.id}/check', data={'csrf_token': csrf}).status_code == 302
     db.session.expire_all()
     assert db.session.get(User, user_b.id).check_interval == 600
+
+    # пустое поле токена не затирает сохранённый токен (маска в форме вместо него)
+    assert client.post('/settings', data={
+        'csrf_token': csrf, 'telegram_bot_token': '',
+        'check_interval': '300'}).status_code == 302
+    from app.models import Setting
+    assert (Setting.query.first().telegram_bot_token or '') == '0:test'
+
+    # 11.3 с заданным паролем админка и iCal требуют Basic Auth
+    app.config['ADMIN_USER'] = 'admin'
+    app.config['ADMIN_PASSWORD'] = 'secret'
+    try:
+        assert client.get('/').status_code == 401
+        assert client.get(f'/export/ical/{user_b.id}').status_code == 401
+        auth = {'Authorization': 'Basic ' + base64.b64encode(b'admin:secret').decode()}
+        assert client.get('/', headers=auth).status_code == 200
+        assert client.get(f'/export/ical/{user_b.id}', headers=auth).status_code == 200
+    finally:
+        app.config['ADMIN_PASSWORD'] = ''
+        app.config['ADMIN_USER'] = ''
 
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

@@ -4,11 +4,18 @@
 <section class="card">
     <h2>Общие настройки</h2>
     <form method="POST" action="{{ url_for('web.save_settings') }}">
+        <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
         <div class="grid">
             <label>Telegram Bot Token
-                <input type="text" name="telegram_bot_token"
-                       value="{{ setting.telegram_bot_token or '' }}"
-                       placeholder="123456:AA...">
+                {% if setting.telegram_bot_token %}
+                    <input type="text" name="telegram_bot_token"
+                           value=""
+                           placeholder="сохранён: {{ setting.telegram_bot_token[:6] }}…{{ setting.telegram_bot_token[-4:] }} (впиши новый — заменит)">
+                {% else %}
+                    <input type="text" name="telegram_bot_token"
+                           value=""
+                           placeholder="123456:AA...">
+                {% endif %}
             </label>
             <label>Интервал проверки по умолчанию (сек)
                 <input type="number" name="check_interval" min="60"
@@ -49,6 +56,7 @@
             <tr>
                 <th>Кто</th>
                 <th>Chat ID</th>
+                <th>Группа</th>
                 <th>Логин ЭИОС</th>
                 <th>Работ</th>
                 <th>Просрочено</th>
@@ -62,6 +70,7 @@
             <tr>
                 <td><a href="{{ url_for('web.user_detail', user_id=r.user.id) }}">{{ r.user.title }}</a></td>
                 <td><code>{{ r.user.chat_id }}</code></td>
+                <td><code>{{ r.user.current_group }}</code></td>
                 <td><code>{{ r.user.timeline_login or '—' }}</code></td>
                 <td>{{ r.works }}</td>
                 <td>{% if r.overdue %}<span class="badge-overdue">{{ r.overdue }}</span>{% else %}0{% endif %}</td>

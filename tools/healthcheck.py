@@ -1,6 +1,8 @@
-"""Healthcheck для Docker: админка отвечает?
+"""Healthcheck для Docker: приложение и БД живы?
 
-200 — всё хорошо, 401 — включён ADMIN_PASSWORD (тоже значит «живой»).
+Бьём в лёгкий /ping (проверка SELECT 1), а не в главную страницу — та рендерит
+всю таблицу пользователей. 200 = живой, 401 = включён ADMIN_PASSWORD (для /ping
+не бывает, но на всякий случай тоже «живой»).
 """
 import os
 import sys
@@ -8,7 +10,7 @@ import urllib.error
 import urllib.request
 
 port = os.getenv('WEB_PORT', '5000')
-url = f'http://127.0.0.1:{port}/'
+url = f'http://127.0.0.1:{port}/ping'
 
 try:
     with urllib.request.urlopen(url, timeout=5) as resp:

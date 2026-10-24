@@ -1,8 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask_sqlalchemy import SQLAlchemy
 
 db = SQLAlchemy()
+
+
+def utc_now() -> datetime:
+    """Naive UTC (без tzinfo) — так хранит SQLite и так сравнивают все вызовы."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Setting(db.Model):
@@ -34,7 +39,27 @@ class User(db.Model):
     notify_enabled = db.Column(db.Boolean, default=True)
     check_interval = db.Column(db.Integer, default=0)  # 0 = использовать глобальный
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Академическая группа для расписания (по умолчанию МКТ-2531)
+    group_name = db.Column(db.String(50), default='МКТ-2531')
+    # Сессионные куки для повторного использования (ускорение проверок и защита от блокировок)
+    session_cookies = db.Column(db.Text)
+
+    # Настройки уведомлений расписания
+    schedule_notify = db.Column(db.Boolean, default=False)  # слать расписание на завтра
+    schedule_notify_time = db.Column(db.String(5), default='22:00')  # HH:MM
+
+    # Утренний дайджест дедлайнов
+    digest_notify = db.Column(db.Boolean, default=False)
+    digest_notify_time = db.Column(db.String(5), default='08:00')
+
+    # Для уведомлений об изменении расписания
+    schedule_hash = db.Column(db.String(64))  # MD5 последнего расписания
+
+    # Когда последний раз уходили дайджест/вечернее расписание (дедупликация в течение дня)
+    digest_last_sent = db.Column(db.DateTime)
+    schedule_last_sent = db.Column(db.DateTime)
+
+    created_at = db.Column(db.DateTime, default=utc_now)
     last_check_at = db.Column(db.DateTime)
     last_error = db.Column(db.String(300))
 
@@ -51,6 +76,10 @@ class User(db.Model):
     def interval(self) -> int:
         return self.check_interval or 0
 
+    @property
+    def current_group(self) -> str:
+        return self.group_name or 'МКТ-2531'
+
 
 class WorkItem(db.Model):
     """Работа (дисциплина) конкретного пользователя."""
@@ -64,9 +93,9 @@ class WorkItem(db.Model):
     discipline = db.Column(db.String(300), nullable=False)
     deadline = db.Column(db.String(100))
     status = db.Column(db.String(100))
-    first_seen_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_updated_at = db.Column(db.DateTime, default=datetime.utcnow,
-                                onupdate=datetime.utcnow)
+    first_seen_at = db.Column(db.DateTime, default=utc_now)
+    last_updated_at = db.Column(db.DateTime, default=utc_now,
+                                onupdate=utc_now)
     notified_new = db.Column(db.Boolean, default=False)
 
     reminder_48_sent = db.Column(db.Boolean, default=False)
