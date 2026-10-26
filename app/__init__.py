@@ -24,30 +24,52 @@ def _auto_migrate():
     try:
         from sqlalchemy import text
         with db.engine.connect() as conn:
-            res = conn.execute(text("PRAGMA table_info(bot_user)")).fetchall()
-            if res:
-                existing_cols = {row[1] for row in res}
-                if 'group_name' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN group_name VARCHAR(50) DEFAULT 'МКТ-2531'"))
-                if 'group_manually_set' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN group_manually_set BOOLEAN DEFAULT 0"))
-                if 'session_cookies' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN session_cookies TEXT"))
-                if 'schedule_notify' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN schedule_notify BOOLEAN DEFAULT 0"))
-                if 'schedule_notify_time' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN schedule_notify_time VARCHAR(5) DEFAULT '22:00'"))
-                if 'digest_notify' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN digest_notify BOOLEAN DEFAULT 0"))
-                if 'digest_notify_time' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN digest_notify_time VARCHAR(5) DEFAULT '08:00'"))
-                if 'schedule_hash' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN schedule_hash VARCHAR(64)"))
-                if 'digest_last_sent' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN digest_last_sent DATETIME"))
-                if 'schedule_last_sent' not in existing_cols:
-                    conn.execute(text("ALTER TABLE bot_user ADD COLUMN schedule_last_sent DATETIME"))
-                conn.commit()
+            # 1. bot_user: настройки, расписание, дайджесты, стрик неудач и темы
+            res_user = conn.execute(text("PRAGMA table_info(bot_user)")).fetchall()
+            if res_user:
+                existing_user = {row[1] for row in res_user}
+                user_columns = [
+                    ('group_name', "VARCHAR(50) DEFAULT 'МКТ-2531'"),
+                    ('group_manually_set', "BOOLEAN DEFAULT 0"),
+                    ('session_cookies', "TEXT"),
+                    ('schedule_notify', "BOOLEAN DEFAULT 0"),
+                    ('schedule_notify_time', "VARCHAR(5) DEFAULT '22:00'"),
+                    ('digest_notify', "BOOLEAN DEFAULT 0"),
+                    ('digest_notify_time', "VARCHAR(5) DEFAULT '08:00'"),
+                    ('schedule_hash', "VARCHAR(64)"),
+                    ('digest_last_sent', "DATETIME"),
+                    ('schedule_last_sent', "DATETIME"),
+                    ('fail_streak', "INTEGER DEFAULT 0"),
+                    ('femboy_unlocked', "BOOLEAN DEFAULT 0"),
+                    ('theme_femboy', "BOOLEAN DEFAULT 0"),
+                ]
+                for col_name, col_def in user_columns:
+                    if col_name not in existing_user:
+                        conn.execute(text(f"ALTER TABLE bot_user ADD COLUMN {col_name} {col_def}"))
+
+            # 2. setting: глобальный режим тех. работ
+            res_setting = conn.execute(text("PRAGMA table_info(setting)")).fetchall()
+            if res_setting:
+                existing_setting = {row[1] for row in res_setting}
+                setting_columns = [
+                    ('maintenance_mode', "BOOLEAN DEFAULT 0"),
+                ]
+                for col_name, col_def in setting_columns:
+                    if col_name not in existing_setting:
+                        conn.execute(text(f"ALTER TABLE setting ADD COLUMN {col_name} {col_def}"))
+
+            # 3. user_work_item: флаг просроченности работы
+            res_work = conn.execute(text("PRAGMA table_info(user_work_item)")).fetchall()
+            if res_work:
+                existing_work = {row[1] for row in res_work}
+                work_columns = [
+                    ('is_overdue', "BOOLEAN DEFAULT 0"),
+                ]
+                for col_name, col_def in work_columns:
+                    if col_name not in existing_work:
+                        conn.execute(text(f"ALTER TABLE user_work_item ADD COLUMN {col_name} {col_def}"))
+
+            conn.commit()
     except Exception as e:
         logging.getLogger(__name__).warning(f"Ошибка автомиграции: {e}")
 

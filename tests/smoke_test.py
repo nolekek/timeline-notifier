@@ -51,6 +51,8 @@ if os.path.exists(_tmp_db):
 os.environ['DATABASE_URL'] = f'sqlite:///{_tmp_db}'
 os.environ.setdefault('SECRET_KEY', 'smoke-test-key')
 os.environ.setdefault('CRED_KEY', 'smoke-test-key')
+os.environ['ADMIN_CHAT_ID'] = ''
+
 
 from app import create_app  # noqa: E402
 import app.bot.telegram_bot as bot_mod  # noqa: E402

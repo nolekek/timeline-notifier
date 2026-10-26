@@ -5,6 +5,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 from app.parser.auth import TimelineAuth
+from app.services import is_work_overdue
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,22 @@ def _parse_deadline(raw: str) -> str:
 
 
 def _format_status(row: dict) -> str:
-    if row.get('PointAccepted') is True:
+    if row.get('PointAccepted') is True or str(row.get('PointAccepted', '')).lower() == 'true':
         return 'Зачтена'
-    if row.get('WorkChecked') is True:
+    if row.get('WorkChecked') is True or str(row.get('WorkChecked', '')).lower() == 'true':
         return 'Проверена'
     ws = row.get('WorkStatusId')
-    if ws is not None and ws > 0:
-        return 'Отправлена'
+    if ws is not None:
+        try:
+            if int(ws) > 0:
+                return 'Отправлена'
+        except (ValueError, TypeError):
+            pass
+    raw = row.get('status') or row.get('Status') or row.get('WorkStatusName')
+    if raw:
+        raw_str = str(raw).strip()
+        if raw_str:
+            return raw_str
     return 'Не отправлена'
 
 
@@ -168,10 +178,21 @@ class TimelineScraper:
             deadline_str = deadline_dt.strftime('%d.%m.%Y %H:%M') if deadline_dt else ''
             status = _format_status(row)
 
-            is_overdue = (
-                deadline_dt is not None
-                and deadline_dt < now
-                and status == 'Не отправлена'
+            point_accepted = (
+                row.get('PointAccepted') is True
+                or str(row.get('PointAccepted', '')).lower() == 'true'
+            )
+            work_checked = (
+                row.get('WorkChecked') is True
+                or str(row.get('WorkChecked', '')).lower() == 'true'
+            )
+
+            is_overdue = is_work_overdue(
+                deadline=deadline_dt,
+                status=status,
+                point_accepted=point_accepted,
+                work_checked=work_checked,
+                now=now,
             )
 
             works.append({

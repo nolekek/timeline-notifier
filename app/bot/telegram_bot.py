@@ -3,13 +3,36 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Any
 
+from flask import has_app_context
 import requests
 
 from app.bot.jokes import joke, joke_html
+from app.services import (
+    COMPLETED_STATUSES,
+    NOT_SENT_STATUSES,
+    enrich_work_item,
+    format_diagnostic_block,
+    is_work_overdue,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def is_maintenance_mode(app=None) -> bool:
+    """Проверяет, активен ли глобальный режим технических работ (R4, AC 56)."""
+    try:
+        from app.models import Setting
+        if app is not None and not has_app_context():
+            with app.app_context():
+                s = Setting.query.first()
+                return bool(s and getattr(s, 'maintenance_mode', False))
+        s = Setting.query.first()
+        return bool(s and getattr(s, 'maintenance_mode', False))
+    except Exception:
+        return False
 
 HELP_TEXT = (
     "<b>Что я умею</b>\n"
@@ -43,6 +66,13 @@ BTN_PROFILE = '⚙️ Профиль'
 BTN_HELP = '❓ Помощь'
 BTN_SCHEDULE = '📅 Расписание'
 BTN_TODAY = '📋 На сегодня'
+
+# NEW v2.1: Фурри/фембой лейблы (R5)
+BTN_STATUS_FEMBOY = '🐾 Статусик :3'
+BTN_OVERDUE_FEMBOY = '🐾 Хвостики-долги'
+BTN_CHECK_FEMBOY = '🐾 Потыкать лапкой'
+BTN_PROFILE_FEMBOY = '🎀 Профиль :з'
+BTN_SCHEDULE_FEMBOY = '📅 Расписаньице :3'
 
 # --- список работ постранично ---
 STATUS_PAGE_SIZE = 4
@@ -192,45 +222,77 @@ class TelegramBot:
         return self._api('deleteMessage',
                          {'chat_id': str(chat_id), 'message_id': message_id}) is not None
 
-    def answer_callback(self, callback_id: str, text: str = ''):
-        self._api('answerCallbackQuery', {'callback_query_id': callback_id, 'text': text})
+    def answer_callback(self, callback_id: str, text: str = '', show_alert: bool = False, **kwargs):
+        payload = {'callback_query_id': callback_id, 'text': text}
+        if show_alert:
+            payload['show_alert'] = True
+        payload.update(kwargs)
+        return self._api('answerCallbackQuery', payload)
 
     # --------------------------------------------------------------- клавиши
 
+    def is_maintenance_mode(self) -> bool:
+        return is_maintenance_mode(self.app)
+
     @staticmethod
-    def _main_keyboard() -> dict:
-        """Постоянное меню внизу экрана (reply keyboard)."""
+    def _main_keyboard(user=None) -> dict:
+        """Постоянное меню внизу экрана (reply keyboard). Поддерживает фембой-тему."""
+        is_femboy = False
+        if user is not None:
+            if isinstance(user, dict):
+                is_femboy = bool(user.get('theme_femboy', False))
+            else:
+                is_femboy = bool(getattr(user, 'theme_femboy', False))
+
+        if is_femboy:
+            b_status = BTN_STATUS_FEMBOY
+            b_overdue = BTN_OVERDUE_FEMBOY
+            b_check = BTN_CHECK_FEMBOY
+            b_profile = BTN_PROFILE_FEMBOY
+            b_schedule = BTN_SCHEDULE_FEMBOY
+            placeholder = 'Выбери лапкой :3'
+        else:
+            b_status = BTN_STATUS
+            b_overdue = BTN_OVERDUE
+            b_check = BTN_CHECK
+            b_profile = BTN_PROFILE
+            b_schedule = BTN_SCHEDULE
+            placeholder = 'Выбери пункт меню'
+
         return {
             'keyboard': [
-                [{'text': BTN_STATUS}, {'text': BTN_OVERDUE}],
-                [{'text': BTN_CHECK}, {'text': BTN_PROFILE}],
-                [{'text': BTN_SCHEDULE}, {'text': BTN_HELP}],
+                [{'text': b_status}, {'text': b_overdue}],
+                [{'text': b_check}, {'text': b_profile}],
+                [{'text': b_schedule}, {'text': BTN_HELP}],
                 [{'text': BTN_TODAY}],
             ],
             'resize_keyboard': True,
             'is_persistent': True,
-            'input_field_placeholder': 'Выбери пункт меню',
+            'input_field_placeholder': placeholder,
         }
 
     @staticmethod
     def _profile_keyboard(user) -> dict:
         group_lbl = user.current_group if hasattr(user, 'current_group') else 'МКТ-2531'
-        return {
-            'inline_keyboard': [
-                [{'text': f"👥 Группа: {group_lbl}", 'callback_data': 'change_group'}],
-                [{'text': '🔑 Сменить логин/пароль ЭИОС', 'callback_data': 'relogin'}],
-                [{'text': ('🔕 Выключить уведомления' if user.notify_enabled
-                           else '🔔 Включить уведомления'),
-                  'callback_data': 'toggle_notify'}],
-                [{'text': ('📅 Расписание на завтра: ВКЛ ✅' if user.schedule_notify
-                           else '📅 Расписание на завтра: ВЫКЛ'),
-                  'callback_data': 'toggle_schedule_notify'}],
-                [{'text': ('🌅 Дайджест утром: ВКЛ ✅' if user.digest_notify
-                           else '🌅 Дайджест утром: ВЫКЛ'),
-                  'callback_data': 'toggle_digest_notify'}],
-                [{'text': '🗑 Удалить мои данные', 'callback_data': 'unlink'}],
-            ]
-        }
+        rows = [
+            [{'text': f"👥 Группа: {group_lbl}", 'callback_data': 'change_group'}],
+            [{'text': '🔑 Сменить логин/пароль ЭИОС', 'callback_data': 'relogin'}],
+            [{'text': ('🔕 Выключить уведомления' if user.notify_enabled
+                       else '🔔 Включить уведомления'),
+              'callback_data': 'toggle_notify'}],
+            [{'text': ('📅 Расписание на завтра: ВКЛ ✅' if user.schedule_notify
+                       else '📅 Расписание на завтра: ВЫКЛ'),
+              'callback_data': 'toggle_schedule_notify'}],
+            [{'text': ('🌅 Дайджест утром: ВКЛ ✅' if user.digest_notify
+                       else '🌅 Дайджест утром: ВЫКЛ'),
+              'callback_data': 'toggle_digest_notify'}],
+        ]
+        if getattr(user, 'femboy_unlocked', False):
+            is_active = getattr(user, 'theme_femboy', False)
+            btn_txt = '🐾 Тема: ВКЛ :3' if is_active else '🐾 Тема: ВЫКЛ'
+            rows.append([{'text': btn_txt, 'callback_data': 'toggle_theme_femboy'}])
+        rows.append([{'text': '🗑 Удалить мои данные', 'callback_data': 'unlink'}])
+        return {'inline_keyboard': rows}
 
     @staticmethod
     def _schedule_keyboard(group_name: str, mode: str = 'today', offset_weeks: int = 0) -> dict:
@@ -273,16 +335,59 @@ class TelegramBot:
         }
 
     @staticmethod
-    def _admin_keyboard() -> dict:
-        return {'inline_keyboard': [
-            [{'text': '🔄 Проверить всех', 'callback_data': 'admin_check'}],
-        ]}
+    def _admin_keyboard(maintenance_mode: bool | None = None) -> dict:
+        if maintenance_mode is None:
+            try:
+                from app.models import Setting
+                s = Setting.query.first()
+                maintenance_mode = bool(s and getattr(s, 'maintenance_mode', False))
+            except Exception:
+                maintenance_mode = False
+
+        maint_btn = (
+            [{'text': '🟢 Выключить тех. работы', 'callback_data': 'admin_maint_off'}]
+            if maintenance_mode else
+            [{'text': '🔴 Включить режим тех. работ?', 'callback_data': 'admin_maint_prompt'}]
+        )
+
+        return {
+            'inline_keyboard': [
+                [{'text': '🔄 Проверить всех', 'callback_data': 'admin_check'}],
+                [
+                    {'text': '🩺 БД', 'callback_data': 'admin_health_db'},
+                    {'text': '⏱ Планировщик', 'callback_data': 'admin_health_sched'},
+                ],
+                [
+                    {'text': '🌐 ЭИОС', 'callback_data': 'admin_health_eios'},
+                    {'text': '🤖 Telegram API', 'callback_data': 'admin_health_tg'},
+                ],
+                maint_btn,
+            ]
+        }
 
     @staticmethod
     def _norm(text: str) -> str:
         """'📊 Статус' -> 'статус' (чтобы кнопки и команды матчились одинаково)."""
-        return ''.join(ch for ch in (text or '').lower()
-                       if ch.isalnum() or ch in ' /_.-').strip()
+        cleaned = ''.join(ch for ch in (text or '').lower()
+                         if ch.isalnum() or ch in ' /_.-').strip()
+        aliases = {
+            'статусик 3': 'статус',
+            'статусик з': 'статус',
+            'статусик': 'статус',
+            'хвостики-долги': 'просрочки',
+            'хвостики долги': 'просрочки',
+            'хвостики': 'просрочки',
+            'потыкать лапкой': 'проверить',
+            'потыкать': 'проверить',
+            'лапкой': 'проверить',
+            'профиль з': 'профиль',
+            'профиль 3': 'профиль',
+            'расписаньице 3': 'расписание',
+            'расписаньице з': 'расписание',
+            'расписаньице': 'расписание',
+            'долги': 'просрочки',
+        }
+        return aliases.get(cleaned, cleaned)
 
     # ------------------------------------------------------------ утилиты БД
 
@@ -312,8 +417,8 @@ class TelegramBot:
                 f"Слежу за твоим Timeline (<code>{html.escape(user.timeline_login or '')}</code>).\n"
                 f"Твоя группа для расписания: <b>{html.escape(user.current_group)}</b>.\n\n"
                 "Кнопки — внизу экрана, подробности: ❓ Помощь\n\n"
-                + joke_html('start'),
-                reply_markup=self._main_keyboard(),
+                + joke_html('start', user=user),
+                reply_markup=self._main_keyboard(user),
             )
         else:
             self._ask_login(user, chat_id)
@@ -410,7 +515,7 @@ class TelegramBot:
             text = ("✅ <b>Готово, вход в Timeline работает.</b>\n"
                     + joke_html('registered') + "\n\n"
                     + self._build_status_text(user))
-            reply(text, self._main_keyboard())
+            reply(text, self._main_keyboard(user))
 
     def _cmd_unlink(self, user, chat_id: str):
         from app.models import db, WorkItem
@@ -424,14 +529,16 @@ class TelegramBot:
         user.last_error = None
         db.session.commit()
         self.send_message(chat_id, "🗑 Данные удалены. Чтобы начать заново: /login\n\n"
-                          + joke_html('unlink'))
+                          + joke_html('unlink', user=user))
 
-    def _menu(self, chat_id: str):
-        self.send_message(chat_id, "Меню — кнопки внизу 👇\n\n" + joke_html('help'),
-                          reply_markup=self._main_keyboard())
+    def _menu(self, chat_id: str, user=None):
+        if user is None:
+            user = self._get_user(chat_id)
+        self.send_message(chat_id, "Меню — кнопки внизу 👇\n\n" + joke_html('help', user=user),
+                          reply_markup=self._main_keyboard(user))
 
-    def _help_text(self) -> str:
-        return HELP_TEXT + "\n\n" + joke_html('help')
+    def _help_text(self, user=None) -> str:
+        return HELP_TEXT + "\n\n" + joke_html('help', user=user)
 
     # ------------------------------------------------------------ расписание
 
@@ -499,7 +606,7 @@ class TelegramBot:
         self.send_message(
             chat_id,
             f"✅ Твоя академическая группа установлена: <b>{html.escape(canonical)}</b>.",
-            reply_markup=self._main_keyboard()
+            reply_markup=self._main_keyboard(user)
         )
         self._cmd_schedule(user, chat_id, mode='today')
 
@@ -551,13 +658,29 @@ class TelegramBot:
     def _build_status_page(self, user, page: int = 1,
                            sort: str = SORT_NEW) -> tuple[str, dict | None]:
         """Страница списка работ: текст + клавиатура листалки."""
-        from app.services import enrich_work_item as _enrich
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._build_status_page(user, page, sort)
+        from app.services import enrich_work_item as _enrich, format_diagnostic_block
 
         items = self._status_items(user, sort)
+        streak = getattr(user, 'fail_streak', 0) or 0
+        show_error = bool(user.last_error and streak >= 3)
+
         if not items:
-            return ("<i>Работ пока нет. Нажми «🔄 Проверить».</i>\n"
-                    "Если это повторяется — проверь логин/пароль: /login\n\n"
-                    + joke_html('empty')), None
+            empty_lines = [
+                "<i>Работ пока нет. Нажми «🔄 Проверить».</i>",
+                "Если это повторяется — проверь логин/пароль: /login",
+                ""
+            ]
+            if show_error:
+                diag = format_diagnostic_block('TimelineScraper', user.last_error, f"{streak}/3")
+                empty_lines.append(f"⚠️ Последняя проверка не удалась: <code>{html.escape(user.last_error)}</code>")
+                empty_lines.append(diag)
+                empty_lines.append(joke_html('apology', user=user))
+                empty_lines.append("")
+            empty_lines.append(joke_html('empty', user=user))
+            return "\n".join(empty_lines), None
 
         pages = max(1, (len(items) + STATUS_PAGE_SIZE - 1) // STATUS_PAGE_SIZE)
         page = min(max(1, page), pages)
@@ -578,16 +701,22 @@ class TelegramBot:
             lines.append(f"   Статус: {e['status']}")
             lines.append("")
 
-        if user.last_error:
-            lines.append("⚠️ Последняя проверка не удалась: "
-                         f"<code>{html.escape(user.last_error)}</code>")
+        if show_error:
+            diag = format_diagnostic_block('TimelineScraper', user.last_error, f"{streak}/3")
+            lines.append(f"⚠️ Последняя проверка не удалась: <code>{html.escape(user.last_error)}</code>")
+            lines.append(diag)
+            lines.append(joke_html('apology', user=user))
+            lines.append("")
 
-        lines.append(joke_html('status_last' if page == pages else 'status', page - 1))
+        lines.append(joke_html('status_last' if page == pages else 'status', page - 1, user=user))
 
         return "\n".join(lines), self._status_keyboard(page, pages, sort)
 
     def _build_status_compact(self, user) -> tuple[str, dict]:
         """Компактная сводка по работам (без подробного списка)."""
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._build_status_compact(user)
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
 
@@ -609,7 +738,7 @@ class TelegramBot:
             f"⏳ В процессе: <b>{max(0, pending_cnt)}</b>",
             f"💀 Просрочено: <b>{overdue_cnt}</b>",
             "",
-            joke_html('status', 0)
+            joke_html('status', 0, user=user)
         ]
         keyboard = {
             'inline_keyboard': [
@@ -622,39 +751,98 @@ class TelegramBot:
         return self._build_status_page(user)[0]
 
     def _build_overdue_text(self, user) -> str:
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._build_overdue_text(user)
+        from datetime import datetime, timedelta
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
 
-        overdue = [_enrich(it) for it in WorkItem.query.filter_by(user_id=user.id).all()]
-        overdue = [e for e in overdue if e['is_overdue']]
+        now = datetime.now()
+        cutoff = now - timedelta(days=5)
+
+        raw_items = WorkItem.query.filter_by(user_id=user.id).all()
+        overdue = []
+        for it in raw_items:
+            e = _enrich(it)
+            if not e.get('is_overdue'):
+                continue
+
+            dl = e.get('deadline')
+            if not dl:
+                continue
+
+            dl_dt = None
+            if isinstance(dl, datetime):
+                dl_dt = dl
+            else:
+                try:
+                    dl_dt = datetime.strptime(str(dl).strip(), '%d.%m.%Y %H:%M')
+                except (ValueError, TypeError):
+                    continue
+
+            curr_cutoff = cutoff
+            if curr_cutoff.tzinfo is not None and dl_dt.tzinfo is None:
+                curr_cutoff = curr_cutoff.replace(tzinfo=None)
+            elif curr_cutoff.tzinfo is None and dl_dt.tzinfo is not None:
+                dl_dt = dl_dt.replace(tzinfo=None)
+
+            if dl_dt < curr_cutoff:
+                continue
+
+            overdue.append(e)
+
         if not overdue:
             return ("<i>Просроченных неотправленных работ нет. Отличная работа! 👍</i>\n\n"
-                    + joke_html('overdue_clean'))
+                    + joke_html('overdue_clean', user=user))
 
         lines = [f"<b>💀 Просроченные работы ({len(overdue)}):</b>\n"]
         for e in overdue:
             lines.append(f"• <b>{html.escape(e['discipline'])}</b>")
             lines.append(f"  Срок: {e['deadline']}")
             lines.append("")
-        lines.append(joke_html('overdue'))
+        lines.append(joke_html('overdue', user=user))
         return "\n".join(lines)
 
     def _build_last_check_text(self, user) -> str:
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._build_last_check_text(user)
+        from app.services import format_diagnostic_block
+
         if not user.last_check_at:
-            return "<i>Проверка ещё не запускалась.</i>\n\n" + joke_html('last_check')
+            return "<i>Проверка ещё не запускалась.</i>\n\n" + joke_html('last_check', user=user)
         ts = user.last_check_at.strftime('%d.%m.%Y %H:%M:%S')
         interval = user.check_interval or self.app.config.get('DEFAULT_CHECK_INTERVAL', 300)
         text = (f"<b>Последняя проверка:</b>\n{ts} UTC\n\n"
                 f"Интервал: {interval // 60} мин\n")
-        if user.last_error:
-            text += f"\n⚠️ Ошибка: <code>{html.escape(user.last_error)}</code>\n"
-        return text + "\n" + joke_html('last_check')
+        streak = getattr(user, 'fail_streak', 0) or 0
+        if user.last_error and streak >= 3:
+            diag = format_diagnostic_block('TimelineScraper', user.last_error, f"{streak}/3")
+            text += (f"\n⚠️ Ошибка: <code>{html.escape(user.last_error)}</code>\n"
+                     f"{diag}\n"
+                     f"{joke_html('apology', user=user)}\n")
+        return text + "\n" + joke_html('last_check', user=user)
 
     def _build_profile_text(self, user) -> str:
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._build_profile_text(user)
+        from app.services import format_diagnostic_block
+
         interval = user.check_interval or self.app.config.get('DEFAULT_CHECK_INTERVAL', 300)
         group = getattr(user, 'current_group', 'МКТ-2531')
         schedule_notify_str = 'ВКЛ ✅' if getattr(user, 'schedule_notify', False) else 'ВЫКЛ'
         digest_notify_str = 'ВКЛ ✅' if getattr(user, 'digest_notify', False) else 'ВЫКЛ'
+
+        streak = getattr(user, 'fail_streak', 0) or 0
+        error_section = ""
+        if user.last_error and streak >= 3:
+            diag = format_diagnostic_block('TimelineAuth', user.last_error, f"{streak}/3")
+            error_section = (f"⚠️ Ошибка: <code>{html.escape(user.last_error)}</code>\n"
+                             f"{diag}\n"
+                             f"{joke_html('apology', user=user)}\n")
+
         return (
             "<b>⚙️ Профиль</b>\n"
             f"Академ. группа: <code>{html.escape(group)}</code> (/group)\n"
@@ -667,15 +855,18 @@ class TelegramBot:
             f"Интервал проверки: {interval // 60} мин\n"
             f"Последняя проверка: "
             f"{user.last_check_at.strftime('%d.%m.%Y %H:%M') if user.last_check_at else '—'}\n"
-            + (f"⚠️ Ошибка: <code>{html.escape(user.last_error)}</code>\n"
-               if user.last_error else "")
-            + "\n" + joke_html('profile')
+            + error_section
+            + "\n" + joke_html('profile', user=user)
         )
 
     # --------------------------------------------------------------- callback
 
     def _handle_callback(self, cb: dict):
-        from app.models import db
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._handle_callback(cb)
+
+        from app.models import Setting, User, WorkItem, db
 
         cb_id = cb.get('id')
         data = cb.get('data', '')
@@ -687,9 +878,177 @@ class TelegramBot:
 
         user = self._get_or_create_user(chat, from_user)
 
+        admin_chat_id = self.app.config.get('ADMIN_CHAT_ID') if self.app else None
+        is_admin = bool(admin_chat_id) and str(chat_id) == str(admin_chat_id)
+
+        # 1. Intercept in maintenance mode for non-admin users
+        if self.is_maintenance_mode() and not is_admin:
+            self.answer_callback(
+                cb_id,
+                "🔧 Ведутся технические работы! Пожалуйста, попробуйте позже.",
+                show_alert=True,
+            )
+            return
+
+        # 2. Process all admin callbacks before registration check
+        if data == 'admin' or data.startswith('admin_'):
+            if not is_admin:
+                self.answer_callback(cb_id, 'Неизвестное действие')
+                return
+
+            if data == 'admin':
+                self.answer_callback(cb_id)
+                self.edit_message(chat_id, message_id, self._admin_text(),
+                                  self._admin_keyboard())
+                return
+
+            if data == 'admin_check':
+                self.answer_callback(cb_id, 'Запускаю проверку всех…')
+                threading.Thread(target=self._admin_check_all, daemon=True).start()
+                return
+
+            if data in ('admin_health_db', 'admin_hc_db'):
+                t0 = time.perf_counter()
+                try:
+                    db.session.execute(db.text("SELECT 1"))
+                    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+                    users_cnt = User.query.count()
+                    works_cnt = WorkItem.query.count()
+                    text = (
+                        "💾 <b>База данных (SQLite)</b>\n"
+                        "Статус: OK ✅\n"
+                        f"Задержка DB: <code>{latency_ms} мс</code>\n"
+                        f"Пользователей: {users_cnt} | Работ в БД: {works_cnt}"
+                    )
+                except Exception as e:
+                    text = (
+                        "💾 <b>База данных (SQLite)</b>\n"
+                        "Статус: ОШИБКА ❌\n"
+                        f"Ошибка: <code>{html.escape(str(e))}</code>"
+                    )
+                self.answer_callback(cb_id, "БД проверена")
+                self.send_message(chat_id, text)
+                return
+
+            if data in ('admin_health_sched', 'admin_hc_sched'):
+                try:
+                    from app.scheduler import jobs as jobs_mod
+                    sched = getattr(jobs_mod, '_scheduler', None)
+                    if sched and getattr(sched, 'running', False):
+                        jobs = sched.get_jobs() if hasattr(sched, 'get_jobs') else []
+                        lines = [
+                            "⏰ <b>Планировщик (APScheduler)</b>",
+                            "Статус: Работает ✅",
+                            f"Активных задач: {len(jobs)}",
+                        ]
+                        if jobs:
+                            lines.append("\nБлижайшие задачи:")
+                            for j in jobs[:5]:
+                                next_run = j.next_run_time.strftime('%H:%M:%S') if getattr(j, 'next_run_time', None) else '—'
+                                lines.append(f"• <code>{html.escape(str(j.id))}</code> ({next_run})")
+                        text = "\n".join(lines)
+                    else:
+                        text = (
+                            "⏰ <b>Планировщик (APScheduler)</b>\n"
+                            "Статус: Остановлен или не инициализирован ⚠️\n"
+                            "Активных задач: 0"
+                        )
+                except Exception as e:
+                    text = (
+                        "⏰ <b>Планировщик (APScheduler)</b>\n"
+                        "Статус: ОШИБКА ❌\n"
+                        f"Ошибка: <code>{html.escape(str(e))}</code>"
+                    )
+                self.answer_callback(cb_id, "Планировщик проверен")
+                self.send_message(chat_id, text)
+                return
+
+            if data in ('admin_health_eios', 'admin_hc_timeline', 'admin_hc_eios'):
+                try:
+                    from app.parser.auth import build_auth
+                    auth = build_auth(self.app)
+                    t0 = time.perf_counter()
+                    alive = auth.is_session_alive()
+                    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+                    text = (
+                        "🌐 <b>EIOS / Timeline Health Check</b>\n"
+                        f"Статус шлюза Timeline: {'Доступен (сессия жива) ✅' if alive else 'Требует входа ⚠️'}\n"
+                        f"Задержка ответа: <code>{latency_ms} мс</code>\n"
+                        f"Шлюз: <code>{html.escape(auth.base_url)}</code>"
+                    )
+                except Exception as e:
+                    text = (
+                        "🌐 <b>EIOS / Timeline Health Check</b>\n"
+                        "Статус: Ошибка проверки ❌\n"
+                        f"Ошибка: <code>{html.escape(str(e))}</code>"
+                    )
+                self.answer_callback(cb_id, "EIOS проверен")
+                self.send_message(chat_id, text)
+                return
+
+            if data in ('admin_health_tg', 'admin_hc_tg'):
+                try:
+                    t0 = time.perf_counter()
+                    res = self._api('getMe', timeout=10)
+                    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+                    raw_bot_name = getattr(self, 'username', None)
+                    if not raw_bot_name and isinstance(res, dict):
+                        raw_bot_name = res.get('username') or res.get('result', {}).get('username')
+                    bot_name = raw_bot_name or 'бот'
+                    text = (
+                        "✈️ <b>Telegram Bot API Health Check</b>\n"
+                        "Статус: OK ✅\n"
+                        f"Задержка API (ping): <code>{latency_ms} мс</code>\n"
+                        f"Бот: @{html.escape(str(bot_name))}"
+                    )
+                except Exception as e:
+                    text = (
+                        "✈️ <b>Telegram Bot API Health Check</b>\n"
+                        "Статус: ОШИБКА ❌\n"
+                        f"Ошибка: <code>{html.escape(str(e))}</code>"
+                    )
+                self.answer_callback(cb_id, "Telegram API проверен")
+                self.send_message(chat_id, text)
+                return
+
+            if data == 'admin_maint_prompt':
+                self.answer_callback(cb_id)
+                self.send_message(
+                    chat_id,
+                    "⚠️ <b>Включение режима технических работ</b>\n\n"
+                    "При включении тех. работ:\n"
+                    "• Все регулярные уведомления студентам будут приостановлены\n"
+                    "• Пользователям будет показываться экран тех. работ со случайной шуткой\n"
+                    "• Администратор сохраняет полный доступ для отладки\n\n"
+                    "Для подтверждения отправьте команду:\n"
+                    "<code>/maintenance_confirm</code>"
+                )
+                return
+
+            if data == 'admin_maint_off':
+                s = Setting.query.first()
+                if not s:
+                    s = Setting()
+                    db.session.add(s)
+                s.maintenance_mode = False
+                db.session.commit()
+                self.answer_callback(cb_id, "Тех. работы выключены ✅")
+                self.send_message(
+                    chat_id,
+                    "✅ <b>Режим технических работ ВЫКЛЮЧЕН</b>.\n\n"
+                    "Бот снова доступен для всех пользователей в обычном режиме."
+                )
+                if message_id:
+                    self.edit_message(chat_id, message_id, self._admin_text(),
+                                      self._admin_keyboard(maintenance_mode=False))
+                return
+
+            self.answer_callback(cb_id, 'Неизвестное действие')
+            return
+
         if data == 'menu':
             self.answer_callback(cb_id)
-            self._menu(chat_id)
+            self._menu(chat_id, user=user)
             return
 
         if data == 'noop':
@@ -779,6 +1138,19 @@ class TelegramBot:
                                  else 'Дайджест утром: ВЫКЛ')
             self.edit_message(chat_id, message_id, self._build_profile_text(user),
                               self._profile_keyboard(user))
+        elif data == 'toggle_theme_femboy':
+            user.theme_femboy = not getattr(user, 'theme_femboy', False)
+            db.session.commit()
+            alert = '🐾 Тема: ВКЛ :3' if user.theme_femboy else '🐾 Тема: ВЫКЛ'
+            self.answer_callback(cb_id, alert)
+            if message_id:
+                self.edit_message(chat_id, message_id, self._build_profile_text(user),
+                                  self._profile_keyboard(user))
+            else:
+                self.send_message(chat_id, self._build_profile_text(user),
+                                  reply_markup=self._profile_keyboard(user))
+            self.send_message(chat_id, "🐾 Меню обновлено! :3" if user.theme_femboy else "Меню обновлено",
+                              reply_markup=self._main_keyboard(user))
         elif data == 'relogin':
             self.answer_callback(cb_id)
             self._ask_login(user, chat_id, intro=False)
@@ -788,20 +1160,17 @@ class TelegramBot:
         elif data == 'check':
             self.answer_callback(cb_id, 'Проверяю…')
             self._run_check_async(user.id, chat_id)
-        elif data == 'admin':
-            self.answer_callback(cb_id)
-            self.edit_message(chat_id, message_id, self._admin_text(),
-                              self._admin_keyboard())
-        elif data == 'admin_check':
-            self.answer_callback(cb_id, 'Запускаю проверку всех…')
-            threading.Thread(target=self._admin_check_all, daemon=True).start()
         else:
             self.answer_callback(cb_id, 'Неизвестное действие')
 
     # ---------------------------------------------------------------- сообщения
 
     def _handle_message(self, msg: dict):
-        from app.models import db
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._handle_message(msg)
+
+        from app.models import Setting, db
 
         chat = msg.get('chat') or {}
         if chat.get('type') != 'private':
@@ -813,8 +1182,50 @@ class TelegramBot:
         low = text.lower()
         norm = self._norm(text)
 
-        is_admin = bool(self.app.config.get('ADMIN_CHAT_ID')) and \
-            chat_id == str(self.app.config['ADMIN_CHAT_ID'])
+        admin_chat_id = self.app.config.get('ADMIN_CHAT_ID') if self.app else None
+        is_admin = bool(admin_chat_id) and str(chat_id) == str(admin_chat_id)
+
+        # 1. Intercept in maintenance mode for non-admin users
+        if self.is_maintenance_mode() and not is_admin:
+            maint_joke = joke('maintenance', user=user) or "Идут технические работы. Скоро вернёмся!"
+            self.send_message(
+                chat_id,
+                "🔧 <b>Технические работы</b>\n\n"
+                "Бот временно недоступен в связи с проведением технических работ.\n\n"
+                f"<i>{html.escape(maint_joke)}</i>"
+            )
+            return
+
+        # 2. Confirmation of maintenance mode by admin
+        if (low == '/maintenance_confirm' or low.startswith('/maintenance_confirm')) and is_admin:
+            s = Setting.query.first()
+            if not s:
+                s = Setting()
+                db.session.add(s)
+            s.maintenance_mode = True
+            db.session.commit()
+            self.send_message(
+                chat_id,
+                "🛑 <b>Режим технических работ ВКЛЮЧЁН</b>.\n\n"
+                "• Все фоновые уведомления студентам приостановлены\n"
+                "• Пользовательские команды и кнопки перехватываются с шуткой\n"
+                "• У вас сохраняется полный доступ для отладки\n\n"
+                "Выключить можно в /admin кнопкой «Выключить тех. работы»."
+            )
+            return
+
+        # --- секретная команда /femboy (R5) ---
+        if low.startswith('/femboy') or norm in ('femboy', 'фембой'):
+            user.femboy_unlocked = True
+            db.session.commit()
+            self.send_message(
+                chat_id,
+                "🐾 <b>Секретный режим разблокирован! :3</b>\n\n"
+                "Переключатель темы теперь доступен в твоём <b>Профиле</b> (/profile).\n"
+                "Мягких лапок и приятной учёбы! uwu",
+                reply_markup=self._main_keyboard(user) if user.is_registered else None
+            )
+            return
 
         # --- команды, доступные всегда ---
         if low.startswith('/start') or norm == 'start':
@@ -827,8 +1238,8 @@ class TelegramBot:
             self.send_message(chat_id, "Отменено.")
             return
         if low in ('/help', 'help', 'помощь') or norm == 'помощь':
-            self.send_message(chat_id, self._help_text(), reply_markup=self._main_keyboard()
-                              if user.is_registered else None)
+            self.send_message(chat_id, self._help_text(user=user),
+                              reply_markup=self._main_keyboard(user) if user.is_registered else None)
             return
         if low.startswith('/admin') and is_admin:
             self.send_message(chat_id, self._admin_text(),
@@ -839,12 +1250,13 @@ class TelegramBot:
             if not body:
                 self.send_message(chat_id, "Использование: <code>/broadcast текст</code>")
                 return
-            threading.Thread(target=self._broadcast, args=(body,), daemon=True).start()
-            self.send_message(chat_id, "Рассылаю…")
+            self._broadcast(body)
             return
 
         # --- Расписание доступно для любого пользователя ---
-        if low.startswith(('/schedule', '/rasp', '/расписание')) or norm in ('расписание', 'пары'):
+        if (low.startswith(('/schedule', '/rasp', '/расписание'))
+                or norm in ('расписание', 'расписаньице', 'пары')
+                or text == BTN_SCHEDULE_FEMBOY):
             self._cmd_schedule(user, chat_id, mode='today')
             return
         if low.startswith(('/group', '/группа')):
@@ -917,8 +1329,8 @@ class TelegramBot:
 
         # --- меню и действия зарегистрированного пользователя ---
         if low.startswith('/menu') or norm == 'меню':
-            self._menu(chat_id)
-        elif low.startswith('/status') or norm == 'статус':
+            self._menu(chat_id, user=user)
+        elif low.startswith('/status') or norm == 'статус' or text == BTN_STATUS_FEMBOY:
             text, keyboard = self._build_status_page(user)
             self.send_message(chat_id, text, reply_markup=keyboard)
         elif low.startswith('/stats') or norm == 'статистика':
@@ -933,11 +1345,13 @@ class TelegramBot:
             parts = text.split(maxsplit=1)
             msg_text = parts[1].strip() if len(parts) > 1 else ''
             self._cmd_feedback(user, chat_id, msg_text)
-        elif low.startswith('/overdue') or norm in ('просрочки', 'просроченные'):
+        elif (low.startswith('/overdue')
+              or norm in ('просрочки', 'просроченные', 'хвостики-долги', 'долги')
+              or text == BTN_OVERDUE_FEMBOY):
             self.send_message(chat_id, self._build_overdue_text(user))
-        elif low.startswith('/check') or norm == 'проверить':
+        elif low.startswith('/check') or norm in ('проверить', 'потыкать лапкой') or text == BTN_CHECK_FEMBOY:
             self._run_check_async(user.id, chat_id)
-        elif low.startswith('/profile') or norm == 'профиль':
+        elif low.startswith('/profile') or norm in ('профиль', 'профиль з') or text == BTN_PROFILE_FEMBOY:
             self.send_message(chat_id, self._build_profile_text(user),
                               reply_markup=self._profile_keyboard(user))
         elif low.startswith('/last') or norm == 'последняя проверка':
@@ -953,8 +1367,8 @@ class TelegramBot:
                                   "Использование: <code>/interval 15</code> (минуты, минимум 5)")
         else:
             self.send_message(chat_id, "Не понял команду. Жми кнопки внизу или /help\n\n"
-                              + joke_html('unknown'),
-                              reply_markup=self._main_keyboard())
+                              + joke_html('unknown', user=user),
+                              reply_markup=self._main_keyboard(user))
 
     # ----------------------------------------------------- проверки (в потоках)
 
@@ -1130,8 +1544,10 @@ class TelegramBot:
                 if user is None:
                     return
                 if error:
+                    diag = format_diagnostic_block('TimelineScraper', error, '3/3')
                     text = (f"⚠️ Ошибка проверки: <code>{html.escape(error)}</code>\n\n"
-                            + joke_html('error'))
+                            f"{diag}\n\n"
+                            + joke_html('apology', user=user))
                     keyboard = None
                 elif result == CHECK_SKIPPED:
                     text, keyboard = self._build_status_page(user)
@@ -1144,17 +1560,25 @@ class TelegramBot:
         threading.Thread(target=worker, daemon=True).start()
 
     def _admin_text(self) -> str:
-        from app.models import User, WorkItem
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._admin_text()
+        from app.models import Setting, User, WorkItem
         total = User.query.count()
         registered = User.query.filter_by(is_registered=True).count()
         active = User.query.filter_by(is_registered=True, is_active=True).count()
         works = WorkItem.query.count()
+        femboy_count = User.query.filter_by(theme_femboy=True).count()
+        s = Setting.query.first()
+        maint_str = "ВКЛЮЧЁН 🔴" if (s and getattr(s, 'maintenance_mode', False)) else "ВЫКЛЮЧЕН 🟢"
         return (
             "<b>🛠 Админ-сводка</b>\n"
+            f"Режим тех. работ: <b>{maint_str}</b>\n"
             f"Всего чатов: {total}\n"
             f"С данными ЭИОС: {registered}\n"
             f"Активных: {active}\n"
-            f"Работ в базе: {works}\n\n"
+            f"Работ в базе: {works}\n"
+            f"Фембой-тема (активно): {femboy_count} 🐾\n\n"
             + joke_html('admin')
         )
 
@@ -1166,16 +1590,21 @@ class TelegramBot:
             logger.error(f"Проверка всех не удалась: {e}")
 
     def _broadcast(self, body: str):
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._broadcast(body)
         from app.models import User
-        with self.app.app_context():
-            chat_ids = [u.chat_id for u in
-                        User.query.filter_by(is_registered=True, is_active=True).all()]
+        chat_ids = [u.chat_id for u in
+                    User.query.filter_by(is_registered=True, is_active=True).all()]
         sent = 0
         for cid in chat_ids:
-            if self.send_message(cid, body):
-                sent += 1
-                time.sleep(0.05)
-        admin = self.app.config.get('ADMIN_CHAT_ID')
+            try:
+                if self.send_message(cid, body):
+                    sent += 1
+            except Exception as e:
+                logger.warning(f"Broadcast failed for chat_id={cid}: {e}")
+            time.sleep(0.01)
+        admin = self.app.config.get('ADMIN_CHAT_ID') if self.app else None
         if admin:
             self.send_message(admin, f"Рассылка: доставлено {sent} из {len(chat_ids)}")
 
@@ -1317,9 +1746,17 @@ def stop_bot():
 
 # ------------------------------------------------- готовые тексты уведомлений
 
-def notify_new_works(sender, chat_id, works: list):
+def notify_new_works(sender, chat_id, works: list, user: Any = None):
+    if is_maintenance_mode(getattr(sender, 'app', None)):
+        return
     if not works:
         return
+    if user is None:
+        try:
+            from app.models import User
+            user = User.query.filter_by(chat_id=str(chat_id)).first()
+        except Exception:
+            user = None
     lines = ["<b>Новые работы в Timeline:</b>\n"]
     for w in works:
         if w.get('is_overdue'):
@@ -1331,13 +1768,21 @@ def notify_new_works(sender, chat_id, works: list):
             lines.append(f"  Срок: {w['deadline']}")
         lines.append(f"  Статус: {w.get('status') or 'Не отправлена'}")
         lines.append("")
-    lines.append(joke_html('new_works'))
+    lines.append(joke_html('new_works', user=user))
     sender.send_message(chat_id, "\n".join(lines))
 
 
-def notify_status_changes(sender, chat_id, changes: list):
+def notify_status_changes(sender, chat_id, changes: list, user: Any = None):
+    if is_maintenance_mode(getattr(sender, 'app', None)):
+        return
     if not changes:
         return
+    if user is None:
+        try:
+            from app.models import User
+            user = User.query.filter_by(chat_id=str(chat_id)).first()
+        except Exception:
+            user = None
     lines = ["<b>Изменения статуса работ:</b>\n"]
     for c in changes:
         if c.get('is_overdue'):
@@ -1349,11 +1794,19 @@ def notify_status_changes(sender, chat_id, changes: list):
         lines.append(f"  Статус: {c['old_status'] or 'Не отправлена'} → "
                      f"<b>{c['new_status'] or 'Не отправлена'}</b>")
         lines.append("")
-    lines.append(joke_html('status_change'))
+    lines.append(joke_html('status_change', user=user))
     sender.send_message(chat_id, "\n".join(lines))
 
 
-def notify_deadline_reminders(sender, chat_id, groups: dict):
+def notify_deadline_reminders(sender, chat_id, groups: dict, user: Any = None):
+    if is_maintenance_mode(getattr(sender, 'app', None)):
+        return
+    if user is None:
+        try:
+            from app.models import User
+            user = User.query.filter_by(chat_id=str(chat_id)).first()
+        except Exception:
+            user = None
     labels = {
         48: '⏳ Осталось 48 часов до дедлайна',
         24: '⏳ Внимание: остался 1 день до дедлайна',
@@ -1368,24 +1821,54 @@ def notify_deadline_reminders(sender, chat_id, groups: dict):
             lines.append(f"• <b>{html.escape(w['discipline'])}</b>")
             lines.append(f"  Срок: {w['deadline']}")
             lines.append("")
-        lines.append(joke_html('reminder'))
+        lines.append(joke_html('reminder', user=user))
         sender.send_message(chat_id, "\n".join(lines))
 
 
-def notify_overdue(sender, chat_id, works: list):
+def notify_overdue(sender, chat_id, works: list, user: Any = None):
+    if is_maintenance_mode(getattr(sender, 'app', None)):
+        return
     if not works:
         return
+    if user is None:
+        try:
+            from app.models import User
+            user = User.query.filter_by(chat_id=str(chat_id)).first()
+        except Exception:
+            user = None
     lines = ["<b>💀 ПРОСРОЧЕННЫЕ РАБОТЫ:</b>\n"]
     for w in works:
         lines.append(f"• <b>{html.escape(w['discipline'])}</b>")
         lines.append(f"  Дедлайн был: {w['deadline']}")
         lines.append("")
-    lines.append(joke_html('overdue_alert'))
+    lines.append(joke_html('overdue_alert', user=user))
     sender.send_message(chat_id, "\n".join(lines))
 
 
-def notify_error(sender, chat_id, text: str):
-    sender.send_message(chat_id, f"{text}\n\n{joke_html('error')}")
+def notify_error(sender, chat_id, text: str, module: str = 'TimelineScraper',
+                 description: str | None = None, attempts: str = '3/3',
+                 tz_offset_hours: int = 3, user: Any = None):
+    """Отправка уведомления об ошибке пользователю с моноширинным диагностическим блоком и извинением (R3)."""
+    if is_maintenance_mode(getattr(sender, 'app', None)):
+        return
+    from app.services import format_diagnostic_block
+
+    if user is None:
+        try:
+            from app.models import User
+            user = User.query.filter_by(chat_id=str(chat_id)).first()
+        except Exception:
+            user = None
+
+    desc = description or (text.split('\n')[0].replace('⚠️', '').strip() if text else "Ошибка синхронизации")
+    diag_block = format_diagnostic_block(module, desc, attempts=attempts, tz_offset_hours=tz_offset_hours)
+    apology = joke_html('apology', user=user) or joke_html('error', user=user)
+
+    if '<code>Модуль:' in text:
+        msg = f"{text}\n\n{apology}"
+    else:
+        msg = f"{text}\n\n{diag_block}\n\n{apology}"
+    sender.send_message(chat_id, msg)
 
 
 def notify_admin(sender, admin_chat_id, text: str):

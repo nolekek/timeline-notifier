@@ -17,6 +17,9 @@ class Setting(db.Model):
     check_interval = db.Column(db.Integer, default=300)  # дефолт для новых юзеров, сек
     last_check_at = db.Column(db.DateTime)
 
+    # NEW v2.1: Глобальный режим технических работ (R4)
+    maintenance_mode = db.Column(db.Boolean, default=False)
+
 
 class User(db.Model):
     """Пользователь бота: свой логин/пароль ЭИОС и свой набор работ."""
@@ -65,6 +68,13 @@ class User(db.Model):
     last_check_at = db.Column(db.DateTime)
     last_error = db.Column(db.String(300))
 
+    # NEW v2.1: Счётчик непрерывных неудач проверки (R2)
+    fail_streak = db.Column(db.Integer, default=0)
+
+    # NEW v2.1: Секретная фембой/фурри локализация (R5)
+    femboy_unlocked = db.Column(db.Boolean, default=False)
+    theme_femboy = db.Column(db.Boolean, default=False)
+
     works = db.relationship('WorkItem', backref='user', lazy='select',
                             cascade='all, delete-orphan')
 
@@ -104,6 +114,9 @@ class WorkItem(db.Model):
     reminder_24_sent = db.Column(db.Boolean, default=False)
     reminder_12_sent = db.Column(db.Boolean, default=False)
     overdue_sent = db.Column(db.Boolean, default=False)
+
+    # NEW v2.1: Явный признак просроченности работы (R1)
+    is_overdue = db.Column(db.Boolean, default=False)
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'external_id', name='uq_user_work'),

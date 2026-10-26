@@ -122,6 +122,7 @@ class TimelineAuth:
         Возвращает True/False, а в self.reason кладёт причину неудачи (REASON_*).
         """
         for attempt in range(1, self.attempts + 1):
+            self.session.cookies.clear()
             ok, reason = self._login_once(username, password)
             if ok:
                 self.reason = None

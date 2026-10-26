@@ -3,7 +3,7 @@ import logging
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -12,7 +12,8 @@ from app.parser.auth import (REASON_NETWORK, REASON_REJECTED, REASON_TEXT,
                              build_auth, debug_dir)
 from app.parser.scraper import SKIP_STATUSES, TimelineScraper
 from app.security import decrypt, encrypt
-from app.services import NOT_SENT_STATUSES
+from app.services import NOT_SENT_STATUSES, format_diagnostic_block
+from app.bot.telegram_bot import is_maintenance_mode
 
 logger = logging.getLogger(__name__)
 
@@ -73,20 +74,26 @@ def mask_chat(chat_id) -> str:
 
 # ------------------------------------------------------------------ напоминания
 
-def _check_deadline_reminders(items, send: bool = True):
+def _check_deadline_reminders(items, send: bool = True, app=None):
     """items — работы ОДНОГО пользователя.
 
     send=False используется при ручных проверках (когда результат показывается на
     экране, а не уходит уведомлением): тогда флаги «напоминание отправлено» НЕ
     взводятся, иначе первое же ручное нажатие молча съело бы напоминание.
     """
+    if is_maintenance_mode(app):
+        return {48: [], 24: [], 12: []}, []
+
     now = datetime.now()
     groups = {48: [], 24: [], 12: []}
     overdue = []
 
     for item in items:
         status = item.status or ''
-        if status not in NOT_SENT_STATUSES:
+        clean_status = status.strip().lower()
+        if clean_status and clean_status != 'не отправлена':
+            continue
+        if getattr(item, 'PointAccepted', False) or getattr(item, 'WorkChecked', False):
             continue
         if not item.deadline:
             continue
@@ -104,6 +111,12 @@ def _check_deadline_reminders(items, send: bool = True):
         hours_left = (deadline_dt - now).total_seconds() / 3600
 
         if hours_left < 0:
+            # R1: Игнорируем работы, дедлайн которых старше 5 дней (> 120 часов)
+            if deadline_dt < now - timedelta(days=5):
+                if send:
+                    item.overdue_sent = True
+                continue
+
             if not item.overdue_sent:
                 overdue.append(payload)
                 if send:
@@ -143,6 +156,9 @@ def check_user(app, user_id: int, notify: bool = True, force: bool = False) -> s
     Возвращает CHECK_OK / CHECK_FAILED / CHECK_SKIPPED / CHECK_UNREGISTERED.
     force=True — игнорировать MIN_CHECK_GAP (для регистрации и ручных проверок).
     """
+    if is_maintenance_mode(app):
+        return CHECK_SKIPPED
+
     lock = _user_lock(user_id)
     if not lock.acquire(blocking=False):
         logger.info(f"Пользователь {user_id} уже проверяется — пропускаю дубль")
@@ -151,6 +167,16 @@ def check_user(app, user_id: int, notify: bool = True, force: bool = False) -> s
         return _check_user_locked(app, user_id, notify, force)
     except Exception:
         logger.exception(f"Проверка пользователя {user_id} упала")
+        try:
+            with app.app_context():
+                user = db.session.get(User, user_id)
+                if user:
+                    streak = max(user.fail_streak or 0, _fail_streak[user_id]) + 1
+                    user.fail_streak = streak
+                    _fail_streak[user_id] = streak
+                    db.session.commit()
+        except Exception as inner_e:
+            logger.error(f"Не удалось обновить fail_streak при сбое: {inner_e}")
         return CHECK_FAILED
     finally:
         lock.release()
@@ -178,6 +204,9 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
         password = decrypt(user.password_enc)
         if not password:
             # CRED_KEY сменился/потерялся — пароль не прочитать
+            streak = max(user.fail_streak or 0, _fail_streak[user.id]) + 1
+            user.fail_streak = streak
+            _fail_streak[user.id] = streak
             user.last_error = 'не удалось расшифровать пароль (сменился CRED_KEY?)'
             user.last_check_at = utc_now()
             db.session.commit()
@@ -198,24 +227,31 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
         except TypeError:
             auth = build_auth(app)
 
-        session_alive = getattr(auth, 'is_session_alive', lambda: False)()
+        session_alive = False
+        if stored_cookies and hasattr(auth, 'is_session_alive'):
+            try:
+                alive_res = auth.is_session_alive()
+                session_alive = alive_res is True or (isinstance(alive_res, bool) and alive_res)
+            except Exception:
+                session_alive = False
 
         if session_alive:
             logger.info(f"Сессия chat_id={mask_chat(user.chat_id)} ещё активна, повторный вход пропущен")
         elif not auth.login(user.timeline_login, password):
-            _handle_login_failure(app, user, auth.reason, notify)
+            _handle_login_failure(app, user, getattr(auth, 'reason', None), notify)
             user.last_check_at = utc_now()
             user.session_cookies = None
             db.session.commit()
             return CHECK_FAILED
         else:
             if hasattr(auth, 'dump_cookies'):
-                user.session_cookies = encrypt(json.dumps(auth.dump_cookies()))
+                try:
+                    cookies = auth.dump_cookies()
+                    if isinstance(cookies, (dict, list)):
+                        user.session_cookies = encrypt(json.dumps(cookies))
+                except Exception:
+                    pass
             db.session.commit()
-
-        # --- вход удался: сбрасываем серию неудач -------------------------------
-        _fail_streak.pop(user_id, None)
-        _last_alert.pop(user_id, None)
 
         scraper = TimelineScraper(
             auth,
@@ -249,6 +285,7 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                         discipline=w['discipline'],
                         deadline=w['deadline'],
                         status=w['status'],
+                        is_overdue=w.get('is_overdue', False),
                     )
                     if w['status'] in SKIP_STATUSES:
                         item.notified_new = True
@@ -267,6 +304,7 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                         item.overdue_sent = False
 
                     item.discipline = w['discipline']
+                    item.is_overdue = w.get('is_overdue', False)
 
                     if old_status != new_status:
                         status_changes.append({
@@ -294,12 +332,16 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                 notify_status_changes(sender, user.chat_id, status_changes)
 
         items = WorkItem.query.filter_by(user_id=user.id).all()
-        groups, overdue = _check_deadline_reminders(items, send=will_notify)
+        groups, overdue = _check_deadline_reminders(items, send=will_notify, app=app)
         if will_notify:
             if any(groups.values()):
                 notify_deadline_reminders(sender, user.chat_id, groups)
             if overdue:
                 notify_overdue(sender, user.chat_id, overdue)
+
+        user.fail_streak = 0
+        _fail_streak[user.id] = 0
+        _last_alert.pop(user.id, None)
 
         if user.last_error:
             user.last_error = None
@@ -315,7 +357,8 @@ def _handle_login_failure(app, user, reason: str, notify: bool):
     """Разбор неудачного входа: данные пользователя или проблемы сайта."""
     from app.bot.telegram_bot import get_sender, notify_admin, notify_error
 
-    streak = _fail_streak[user.id] + 1
+    streak = max(user.fail_streak or 0, _fail_streak[user.id]) + 1
+    user.fail_streak = streak
     _fail_streak[user.id] = streak
     text = REASON_TEXT.get(reason, reason or 'неизвестная ошибка')
     user.last_error = f"{text} (подряд: {streak})"
@@ -422,6 +465,9 @@ def send_daily_digest(app):
     отправки хранятся в БД, поэтому дублирований из-за частого тика или
     рестарта не бывает).
     """
+    if is_maintenance_mode(app):
+        return
+
     from app.bot.telegram_bot import get_sender
     import html as html_mod
 
@@ -477,6 +523,9 @@ def send_daily_digest(app):
 
 def send_schedule_notify(app):
     """Вечернее уведомление — расписание на завтра (один раз в день)."""
+    if is_maintenance_mode(app):
+        return
+
     from app.bot.telegram_bot import get_sender
     from app.parser.schedule import get_schedule_view
 
@@ -512,6 +561,9 @@ def check_schedule_changes(app):
     уведомления о расписании (schedule_notify) и не выключали уведомления
     вообще (notify_enabled) — остальным сайт не дёргаем и не пишем.
     """
+    if is_maintenance_mode(app):
+        return
+
     import hashlib
     import json
     from app.bot.telegram_bot import get_sender
