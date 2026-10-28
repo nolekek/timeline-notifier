@@ -751,5 +751,88 @@ with app.app_context():
     bot._handle_message(msg('999333', BTN_HELP))
     assert any('Что я умею' in t for t in texts()), texts()
 
+    # =========================================================================
+    # 18. [v3.1.1] Редизайн расписания с карточками <blockquote>
+    # =========================================================================
+    from datetime import date
+    from app.parser.schedule import (
+        _clean_classroom,
+        _format_lesson_block,
+        _format_week,
+        _shorten_teacher,
+        _split_subject_type,
+        format_day_compact,
+    )
+
+    # 18.1 Разделение названия предмета и типа пары
+    assert _split_subject_type('История зарубежной музыки (конс. перед экз.)') == (
+        'История зарубежной музыки', 'конс. перед экз.')
+    assert _split_subject_type('Музыкально-инструментальное исполнительство (Зачёт с оценкой)') == (
+        'Музыкально-инструментальное исполнительство', 'Зачёт с оценкой')
+    assert _split_subject_type('История зарубежной музыки (Экз.)') == (
+        'История зарубежной музыки', 'Экз.')
+    assert _split_subject_type('Физическая культура (элективная) (Практ.зан-я)') == (
+        'Физическая культура (элективная)', 'Практ.зан-я')
+    assert _split_subject_type('Информатика') == ('Информатика', '')
+
+    # 18.2 Сокращение ФИО преподавателей
+    assert _shorten_teacher('Кожевникова А.А.') == 'Кожевникова А.А.'
+    assert _shorten_teacher('Кожевникова Алла Олеговна') == 'Кожевникова А.О.'
+    assert _shorten_teacher('Иванов Иван Иванович') == 'Иванов И.И.'
+    assert _shorten_teacher('Нежинская Т.А.') == 'Нежинская Т.А.'
+    assert _shorten_teacher('Петров') == 'Петров'
+    assert _shorten_teacher('') == ''
+
+    # 18.3 Очистка названий аудиторий
+    assert _clean_classroom('7-203') == '7-203'
+    assert _clean_classroom('Ауд. 7-203') == '7-203'
+    assert _clean_classroom('Учебная аудитория 469 ГУК') == '469 ГУК'
+    assert _clean_classroom('УК М11: Спортивный зал') == 'Спортивный зал'
+    assert _clean_classroom('УК М11: Ауд. 201') == '201'
+    assert _clean_classroom('Виртуальная аудитория дистант') == 'Дистант'
+
+    # 18.4 Форматирование карточки дня в точном соответствии с макетом
+    test_sched_day = {
+        'date': date(2026, 6, 18),
+        'day_title': '18 июня',
+        'weekday_short': 'Чт',
+        'lessons': [
+            {
+                'time': '09:45 - 11:20',
+                'subject': 'История зарубежной музыки (конс. перед экз.)',
+                'classroom': '7-203',
+                'teacher': 'Кожевникова А.А.',
+                'subgroup': '',
+            },
+            {
+                'time': '12:00 - 13:35',
+                'subject': 'Музыкально-инструментальное исполнительство (Зачёт с оценкой)',
+                'classroom': '7-203',
+                'teacher': 'Нежинская Т.А.',
+                'subgroup': '',
+            }
+        ]
+    }
+
+    rendered_compact = format_day_compact(test_sched_day)
+    assert '📅 <b>Четверг, 18.06.2026</b>' in rendered_compact
+    assert '<blockquote>' in rendered_compact and '</blockquote>' in rendered_compact
+    assert '⏰ 09:45-11:20 | конс. перед экз.' in rendered_compact
+    assert '📖 История зарубежной музыки' in rendered_compact
+    assert '👩‍🏫 Кожевникова А.А. 🏫 7-203' in rendered_compact
+    assert '⏰ 12:00-13:35 | Зачёт с оценкой' in rendered_compact
+    assert '📖 Музыкально-инструментальное исполнительство' in rendered_compact
+    assert '👩‍🏫 Нежинская Т.А. 🏫 7-203' in rendered_compact
+
+    # 18.5 Проверка дня без пар
+    empty_day = {'date': date(2026, 6, 21), 'day_title': '21 июня', 'weekday_short': 'Вс', 'lessons': []}
+    rendered_empty = format_day_compact(empty_day)
+    assert '<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>' in rendered_empty
+
+    # 18.6 Недельный вывод с защитой от разрыва тегов Telegram
+    week_text = _format_week([test_sched_day, empty_day], 'МКТ-2531', date(2026, 6, 15), date(2026, 6, 21))
+    assert '<b>📅 Неделя 15.06 – 21.06 — МКТ-2531</b>' in week_text
+    assert week_text.count('<blockquote>') == week_text.count('</blockquote>') == 2
+
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

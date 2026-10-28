@@ -240,74 +240,159 @@ def _esc(s: str) -> str:
     return html_mod.escape(str(s or ''), quote=False)
 
 
+def _split_subject_type(raw_subj: str) -> tuple[str, str]:
+    """Разделяет 'История (Экз.)' на ('История', 'Экз.')."""
+    s = (raw_subj or '').strip()
+    m = re.search(r'\s*\(([^()]+)\)\s*$', s)
+    if m:
+        subj = s[:m.start()].strip()
+        l_type = m.group(1).strip()
+        if subj:
+            return subj, l_type
+    return s, ''
+
+
+def _shorten_teacher(name: str) -> str:
+    """Сокращает ФИО преподавателя: 'Кожевникова Алла Олеговна' -> 'Кожевникова А.О.'."""
+    if not name:
+        return ''
+    s = ' '.join(name.strip().split())
+    parts = s.split()
+    if not parts:
+        return ''
+    surname = parts[0]
+    if len(parts) == 1:
+        return surname
+
+    # 3+ частей: Фамилия Имя Отчество -> Фамилия И.О.
+    if len(parts) >= 3:
+        i1 = parts[1][0].upper()
+        i2 = parts[2][0].upper()
+        return f"{surname} {i1}.{i2}."
+
+    # Ровно 2 части: Фамилия + вторая часть
+    second = parts[1]
+    letters = re.findall(r'[A-Za-zА-Яа-яЁё]', second)
+    if '.' in second:
+        if len(letters) >= 2:
+            return f"{surname} {letters[0].upper()}.{letters[1].upper()}."
+        elif len(letters) == 1:
+            return f"{surname} {letters[0].upper()}."
+    # Иначе это полное имя (например 'Иван') -> первая буква
+    if letters:
+        return f"{surname} {letters[0].upper()}."
+
+    return surname
+
+
+def _clean_classroom(room: str) -> str:
+    """Упрощает название аудитории: 'Учебная аудитория 469 ГУК' -> '469 ГУК', 'Ауд. 7-203' -> '7-203'."""
+    if not room:
+        return ''
+    s = ' '.join(room.strip().split())
+    if 'дистант' in s.lower() or 'виртуальная' in s.lower():
+        return 'Дистант'
+    prefixes = [
+        'Учебная аудитория ', 'учебная аудитория ',
+        'УК М11: ', 'УК М11 ',
+        'Аудитория ', 'аудитория ',
+        'Ауд. ', 'ауд. ', 'Ауд ', 'ауд ',
+    ]
+    changed = True
+    while changed:
+        changed = False
+        for p in prefixes:
+            if s.startswith(p):
+                s = s[len(p):].strip()
+                changed = True
+                break
+    return s
+
+
+def _format_lesson_block(l: dict) -> str:
+    """Форматирует одну пару в блок внутри цитаты:
+    ⏰ 09:45-11:20 | конс. перед экз.
+    📖 История зарубежной музыки
+    👩‍🏫 Кожевникова А.А. 🏫 7-203
+    """
+    raw_subj = l.get('subject', '')
+    clean_subj, lesson_type = _split_subject_type(raw_subj)
+
+    time_raw = (l.get('time') or '').strip()
+    time_clean = re.sub(r'\s*-\s*', '-', time_raw)
+    if lesson_type:
+        line1 = f"⏰ {_esc(time_clean)} | {_esc(lesson_type)}" if time_clean else f"⏰ {_esc(lesson_type)}"
+    else:
+        line1 = f"⏰ {_esc(time_clean)}" if time_clean else "⏰"
+
+    line2 = f"📖 {_esc(clean_subj)}" if clean_subj else "📖 <i>Без названия</i>"
+
+    teacher = _shorten_teacher(l.get('teacher', ''))
+    classroom = _clean_classroom(l.get('classroom', ''))
+    subgroup = (l.get('subgroup') or '').strip()
+
+    details = []
+    if teacher:
+        details.append(f"👩‍🏫 {_esc(teacher)}")
+    if classroom:
+        details.append(f"🏫 {_esc(classroom)}")
+    if subgroup:
+        details.append(f"👥 {_esc(subgroup)}")
+
+    lines = [line1, line2]
+    if details:
+        lines.append(" ".join(details))
+    return "\n".join(lines)
+
+
 def format_day_schedule(day: dict, group_name: str, note: str = "") -> str:
-    """Форматирует один день расписания в Telegram HTML (всё экранировано)."""
+    """Форматирует один день расписания в Telegram HTML с блоком цитаты <blockquote>."""
     d_obj: Optional[date] = day.get('date')
     if d_obj:
         weekday_full = RU_WEEKDAYS.get(d_obj.weekday(), day.get('weekday_short', ''))
-        header_date = f"{day.get('day_title', '')} ({weekday_full})"
+        header_date = f"{weekday_full}, {d_obj.strftime('%d.%m.%Y')}"
     else:
-        header_date = f"{day.get('day_title', '')} ({day.get('weekday_short', '')})"
+        weekday = day.get('weekday_short', '')
+        title = day.get('day_title', '')
+        header_date = f"{weekday}, {title}".strip(', ') if weekday else title
 
     lines = [
         f"<b>📅 Расписание — {_esc(group_name)}</b>",
-        f"<b>{_esc(header_date)}</b>",
+        f"📅 <b>{_esc(header_date)}</b>",
     ]
     if note:
         lines.append(f"<i>{_esc(note)}</i>")
-    lines.append("─" * 22)
 
     lessons = day.get('lessons', [])
     if not lessons:
-        lines.append("<i>Пар нет, можно отдыхать! 🎉</i>")
+        lines.append("<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>")
         return "\n".join(lines)
 
-    for idx, l in enumerate(lessons, start=1):
-        lines.append(f"⏰ <b>{_esc(l['time'])}</b>")
-        lines.append(f"📚 <b>{_esc(l['subject'])}</b>")
-
-        details = []
-        if l['classroom']:
-            details.append(f"📍 {_esc(l['classroom'])}")
-        if l['subgroup']:
-            details.append(f"👥 {_esc(l['subgroup'])}")
-        if details:
-            lines.append(" · ".join(details))
-
-        if l['teacher']:
-            lines.append(f"👤 <i>{_esc(l['teacher'])}</i>")
-        if idx < len(lessons):
-            lines.append("")
-
+    lesson_blocks = [_format_lesson_block(l) for l in lessons]
+    inner_quote = "\n\n".join(b for b in lesson_blocks if b)
+    lines.append(f"<blockquote>{inner_quote}</blockquote>")
     return "\n".join(lines)
 
 
 def format_day_compact(day: dict) -> str:
-    """Компактный формат дня для недельного расписания (чтобы не превышать лимит сообщения)."""
+    """Компактный формат дня для недельного расписания."""
     d_obj: Optional[date] = day.get('date')
     if d_obj:
         weekday_full = RU_WEEKDAYS.get(d_obj.weekday(), day.get('weekday_short', ''))
-        day_hdr = f"📅 <b>{_esc(day.get('day_title', ''))} ({weekday_full})</b>"
+        day_hdr = f"📅 <b>{_esc(weekday_full)}, {d_obj.strftime('%d.%m.%Y')}</b>"
     else:
-        day_hdr = f"📅 <b>{_esc(day.get('day_title', ''))}</b>"
+        weekday = day.get('weekday_short', '')
+        title = day.get('day_title', '')
+        hdr_txt = f"{weekday}, {title}".strip(', ') if weekday else title
+        day_hdr = f"📅 <b>{_esc(hdr_txt)}</b>"
 
     lessons = day.get('lessons', [])
     if not lessons:
-        return f"{day_hdr}\n<i>Пар нет 🎉</i>"
+        return f"{day_hdr}\n<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>"
 
-    lines = [day_hdr]
-    for l in lessons:
-        loc = []
-        if l['classroom']:
-            # Упростим длинные названия: 'УК М11: Спортивный зал' -> 'Спортивный зал'
-            room = l['classroom'].replace('УК М11: ', '').replace('Учебная аудитория ', 'ауд. ')
-            loc.append(room)
-        if l['subgroup']:
-            loc.append(l['subgroup'])
-        loc_str = f" ({', '.join(loc)})" if loc else ""
-        teacher_str = f" · <i>{_esc(l['teacher'])}</i>" if l['teacher'] else ""
-        lines.append(f"⏰ <b>{_esc(l['time'])}</b> — {_esc(l['subject'])}{_esc(loc_str)}{teacher_str}")
-    return "\n".join(lines)
+    lesson_blocks = [_format_lesson_block(l) for l in lessons]
+    inner_quote = "\n\n".join(b for b in lesson_blocks if b)
+    return f"{day_hdr}\n<blockquote>{inner_quote}</blockquote>"
 
 
 def _week_window(today: date, offset_weeks: int, smart_weekend: bool = True) -> tuple[date, date]:
@@ -330,11 +415,18 @@ def _format_week(week_days: list[dict], group_name: str, monday: date, sunday: d
     header = (f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
               f"{_esc(group_name)}</b>{note}\n")
     sep = "\n\n"
-    body = sep.join(format_day_compact(d) for d in week_days)
-    full = header + "\n" + body
-    if len(full) > 4000:
-        return full[:3990] + "\n..."
-    return full
+    formatted_days = []
+    total_len = len(header) + len(sep)
+    for d in week_days:
+        day_str = format_day_compact(d)
+        if total_len + len(day_str) + len(sep) > 3950:
+            formatted_days.append("<i>...остальные дни недели доступны на сайте или по кнопкам дней</i>")
+            break
+        formatted_days.append(day_str)
+        total_len += len(day_str) + len(sep)
+
+    body = sep.join(formatted_days)
+    return header + "\n" + body
 
 
 def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool = False,
@@ -402,7 +494,8 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
             note = f"💡 На завтра ({tomorrow.strftime('%d.%m')}) занятий нет. Следующий учебный день:"
             return format_day_schedule(next_day, group_name, note=note)
 
-        return (f"<b>📅 Расписание — {_esc(group_name)}</b>\n\n"
-                f"На завтра ({tomorrow.strftime('%d.%m')}) занятий не запланировано! 🎉")
+        return (f"<b>📅 Расписание — {_esc(group_name)}</b>\n"
+                f"📅 <b>{tomorrow.strftime('%d.%m.%Y')}</b>\n"
+                f"<blockquote><i>На завтра занятий не запланировано! 🎉</i></blockquote>")
 
     return format_day_schedule(days[0], group_name)
