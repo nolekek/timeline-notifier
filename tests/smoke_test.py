@@ -736,5 +736,20 @@ with app.app_context():
     detail_stub_text, _ = bot._build_work_detail(user_v3, '999005')
     assert 'В поле задания указано «Выполнить работу»' in detail_stub_text
 
+    # =========================================================================
+    # 17. Проверка кнопки и команды «Помощь», валидность HTML в HELP_TEXT
+    # =========================================================================
+    import re
+    from app.bot.telegram_bot import BTN_HELP, HELP_TEXT
+
+    valid_tg_tags = {'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'span', 'tg-spoiler', 'a', 'tg-emoji', 'code', 'pre', 'blockquote', '/b', '/strong', '/i', '/em', '/u', '/ins', '/s', '/strike', '/del', '/span', '/tg-spoiler', '/a', '/tg-emoji', '/code', '/pre', '/blockquote'}
+    all_tags = re.findall(r'<([a-zA-Z0-9_\-А-Яа-яЁё/]+)>', HELP_TEXT)
+    invalid_tags = [t for t in all_tags if t.lower() not in valid_tg_tags]
+    assert not invalid_tags, f"Недопустимые HTML-теги в HELP_TEXT: {invalid_tags}"
+
+    reset_outbox()
+    bot._handle_message(msg('999333', BTN_HELP))
+    assert any('Что я умею' in t for t in texts()), texts()
+
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

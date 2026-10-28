@@ -50,8 +50,8 @@ HELP_TEXT = (
     "/schedule — расписание занятий\n"
     "/group МКТ-2531 — сменить учебную группу\n"
     "/status — работы, баллы и подробности\n"
-    "/task <id> — подробная карточка задания по ID\n"
-    "/find <слово> — поиск заданий по теме и тексту\n"
+    "/task ID — подробная карточка задания по ID\n"
+    "/find слово — поиск заданий по теме и тексту\n"
     "/horoscope — студенческий гороскоп дня\n"
     "/stats — общая статистика\n"
     "/today — горящие работы (сегодня/завтра)\n"
@@ -1543,7 +1543,7 @@ class TelegramBot:
             db.session.commit()
             self.send_message(chat_id, "Отменено.")
             return
-        if low in ('/help', 'help', 'помощь') or norm == 'помощь':
+        if low in ('/help', 'help', 'помощь') or norm == 'помощь' or text == BTN_HELP or 'помощь' in low:
             self.send_message(chat_id, self._help_text(user=user),
                               reply_markup=self._main_keyboard(user) if user.is_registered else None)
             return
