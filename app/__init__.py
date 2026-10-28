@@ -10,10 +10,11 @@ from app.models import db
 
 @event.listens_for(Engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
-    """Оптимизация SQLite: WAL-режим, внешние ключи и увеличенный busy_timeout."""
+    """Оптимизация SQLite для ARM/eMMC: WAL-режим, NORMAL синхронизация, внешние ключи и busy_timeout."""
     if type(dbapi_connection).__module__.startswith("sqlite3"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA synchronous = NORMAL")
         cursor.execute("PRAGMA foreign_keys = ON")
         cursor.execute("PRAGMA busy_timeout = 5000")
         cursor.close()
@@ -42,6 +43,8 @@ def _auto_migrate():
                     ('fail_streak', "INTEGER DEFAULT 0"),
                     ('femboy_unlocked', "BOOLEAN DEFAULT 0"),
                     ('theme_femboy', "BOOLEAN DEFAULT 0"),
+                    ('horoscope_notify', "BOOLEAN DEFAULT 0"),
+                    ('zodiac_sign', "VARCHAR(30)"),
                 ]
                 for col_name, col_def in user_columns:
                     if col_name not in existing_user:
@@ -64,6 +67,11 @@ def _auto_migrate():
                 existing_work = {row[1] for row in res_work}
                 work_columns = [
                     ('is_overdue', "BOOLEAN DEFAULT 0"),
+                    ('point_name', "VARCHAR(300)"),
+                    ('control_text', "TEXT"),
+                    ('points', "VARCHAR(50)"),
+                    ('teacher_note', "TEXT"),
+                    ('unavailability_reason', "VARCHAR(255)"),
                 ]
                 for col_name, col_def in work_columns:
                     if col_name not in existing_work:

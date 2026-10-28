@@ -75,6 +75,10 @@ class User(db.Model):
     femboy_unlocked = db.Column(db.Boolean, default=False)
     theme_femboy = db.Column(db.Boolean, default=False)
 
+    # NEW v3.0: Ежедневный студенческий гороскоп
+    horoscope_notify = db.Column(db.Boolean, default=False)
+    zodiac_sign = db.Column(db.String(30))
+
     works = db.relationship('WorkItem', backref='user', lazy='select',
                             cascade='all, delete-orphan')
 
@@ -117,6 +121,13 @@ class WorkItem(db.Model):
 
     # NEW v2.1: Явный признак просроченности работы (R1)
     is_overdue = db.Column(db.Boolean, default=False)
+
+    # NEW v3.0: Детальные поля задания из SendGrid
+    point_name = db.Column(db.String(300))  # тема / контрольная точка
+    control_text = db.Column(db.Text)       # текст задания преподавателя
+    points = db.Column(db.String(50))       # текущие/макс баллы, напр. "5 из 5"
+    teacher_note = db.Column(db.Text)       # рецензия / комментарий преподавателя
+    unavailability_reason = db.Column(db.String(255))  # инфо о доступности задания
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'external_id', name='uq_user_work'),

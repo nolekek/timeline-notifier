@@ -286,6 +286,11 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                         deadline=w['deadline'],
                         status=w['status'],
                         is_overdue=w.get('is_overdue', False),
+                        point_name=w.get('point_name', ''),
+                        control_text=w.get('control_text', ''),
+                        points=w.get('points', ''),
+                        teacher_note=w.get('teacher_note', ''),
+                        unavailability_reason=w.get('unavailability_reason', ''),
                     )
                     if w['status'] in SKIP_STATUSES:
                         item.notified_new = True
@@ -295,6 +300,10 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                 else:
                     old_status = item.status or ''
                     new_status = w['status'] or ''
+                    old_points = item.points or ''
+                    new_points = w.get('points', '')
+                    old_note = item.teacher_note or ''
+                    new_note = w.get('teacher_note', '')
 
                     if w['deadline'] and item.deadline != w['deadline']:
                         item.deadline = w['deadline']
@@ -305,14 +314,26 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
 
                     item.discipline = w['discipline']
                     item.is_overdue = w.get('is_overdue', False)
+                    item.point_name = w.get('point_name', '')
+                    item.control_text = w.get('control_text', '')
+                    item.points = new_points
+                    item.teacher_note = new_note
+                    item.unavailability_reason = w.get('unavailability_reason', '')
 
-                    if old_status != new_status:
+                    # Изменение статуса, выставление/изменение баллов или рецензии
+                    status_changed = (old_status != new_status)
+                    points_changed = bool(new_points and new_points != old_points)
+                    note_changed = bool(new_note and new_note != old_note)
+
+                    if status_changed or points_changed or note_changed:
                         status_changes.append({
                             'discipline': w['discipline'],
                             'deadline': w['deadline'],
                             'old_status': old_status,
                             'new_status': new_status,
                             'is_overdue': w.get('is_overdue', False),
+                            'points': new_points,
+                            'teacher_note': new_note,
                         })
                         item.status = new_status
 
@@ -498,12 +519,16 @@ def send_daily_digest(app):
                     urgent.append((dt, it))
 
             user.digest_last_sent = now  # помечаем обработанным и без горящих работ
-            if not urgent:
+            horo_enabled = bool(getattr(user, 'horoscope_notify', False) and getattr(user, 'zodiac_sign', None))
+            if not urgent and not horo_enabled:
                 db.session.commit()
                 continue
             urgent.sort(key=lambda x: x[0])
 
-            lines = ['<b>🌅 Доброе утро! Дедлайны ближайших 3 дней:</b>\n']
+            lines = ['<b>🌅 Доброе утро! Дедлайны ближайших 3 дней:</b>\n'] if urgent else [
+                '<b>🌅 Доброе утро!</b>',
+                '🎉 Горящих дедлайнов на ближайшие 3 дня нет.\n'
+            ]
             for dt, it in urgent[:10]:
                 hours_left = (dt - now).total_seconds() / 3600
                 if hours_left < 12:
@@ -513,8 +538,16 @@ def send_daily_digest(app):
                 else:
                     icon = '⏳'
                 lines.append(f'{icon} <b>{html_mod.escape(it.discipline)}</b>')
+                if getattr(it, 'point_name', None):
+                    lines.append(f"   📌 Тема: {html_mod.escape(it.point_name)}")
                 lines.append(f'   Срок: {it.deadline}')
                 lines.append('')
+
+            if horo_enabled:
+                from app.bot.horoscope import get_daily_horoscope_short
+                horo_text = get_daily_horoscope_short(user.zodiac_sign, user=user)
+                if horo_text:
+                    lines.append(f"🔮 <b>Гороскоп дня:</b>\n{horo_text}\n")
 
             sender = get_sender(app)
             if sender and sender.send_message(user.chat_id, '\n'.join(lines)):

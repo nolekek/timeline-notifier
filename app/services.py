@@ -4,6 +4,7 @@
 """
 from datetime import datetime, timedelta, timezone
 import html as html_mod
+import re
 from sqlalchemy import event
 from sqlalchemy.orm import object_session
 
@@ -134,11 +135,18 @@ def enrich_work_item(item) -> dict:
         display_status = raw_status
 
     return {
+        'id': _get_item_field(item, 'id'),
+        'external_id': str(_get_item_field(item, 'external_id') or ''),
         'discipline': _get_item_field(item, 'discipline'),
         'deadline': deadline,
         'status': display_status,
         'last_updated_at': _get_item_field(item, 'last_updated_at'),
         'is_overdue': is_overdue,
+        'point_name': _get_item_field(item, 'point_name') or '',
+        'control_text': _get_item_field(item, 'control_text') or '',
+        'points': _get_item_field(item, 'points') or '',
+        'teacher_note': _get_item_field(item, 'teacher_note') or '',
+        'unavailability_reason': _get_item_field(item, 'unavailability_reason') or '',
     }
 
 
@@ -157,4 +165,61 @@ def format_diagnostic_block(module: str, description: str, attempts: str = "3/3"
     att_str = html_mod.escape(str(attempts or ''))
 
     return f"<code>Модуль: {mod_str} | Ошибка: {desc_str} | Попытки: {att_str} | Время: {time_str} MSK</code>"
+
+
+# Поддерживаемые расширения файлов заданий и учебных материалов
+KNOWN_FILE_EXTENSIONS = {
+    'pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'tex',
+    'xls', 'xlsx', 'csv', 'ods',
+    'ppt', 'pptx', 'odp',
+    'zip', 'rar', '7z', 'tar', 'gz',
+    'py', 'c', 'cpp', 'cs', 'java', 'js', 'html', 'css', 'sql',
+    'png', 'jpg', 'jpeg'
+}
+
+_FILE_REGEX = re.compile(
+    r'\b([a-zA-Z0-9_\-\.А-Яа-яЁё]+?\.(?:' + '|'.join(KNOWN_FILE_EXTENSIONS) + r'))\b',
+    re.IGNORECASE
+)
+_URL_REGEX = re.compile(r'(https?://[^\s<>"\'\)]+)', re.IGNORECASE)
+
+
+def extract_file_attachments(text: str | None) -> list[str]:
+    """Извлекает названия файлов с расширениями из текста задания преподавателя или рецензии.
+
+    Позволяет студентам сразу видеть имена прикреплённых или требуемых файлов
+    (например, 'LR_01.docx', 'metodichka.pdf', 'dataset.zip').
+    """
+    if not text:
+        return []
+    # Удаляем URL, чтобы части адресов не определялись как файлы
+    clean = _URL_REGEX.sub('', text)
+    matches = _FILE_REGEX.findall(clean)
+    seen = set()
+    result = []
+    for m in matches:
+        cleaned = m.strip('.,;:-\"\' \t\r\n')
+        if '.' in cleaned:
+            ext = cleaned.rsplit('.', 1)[-1].lower()
+            if ext in KNOWN_FILE_EXTENSIONS:
+                if cleaned.lower() not in seen:
+                    seen.add(cleaned.lower())
+                    result.append(cleaned)
+    return result
+
+
+def extract_urls(text: str | None) -> list[str]:
+    """Извлекает внешние веб-ссылки (диски, облака, сайты) из текста задания."""
+    if not text:
+        return []
+    matches = _URL_REGEX.findall(text)
+    seen = set()
+    result = []
+    for u in matches:
+        cleaned = u.rstrip('.,;:) \t\r\n')
+        if cleaned.lower() not in seen:
+            seen.add(cleaned.lower())
+            result.append(cleaned)
+    return result
+
 

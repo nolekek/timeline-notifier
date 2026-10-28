@@ -201,6 +201,11 @@ class TimelineScraper:
                 'deadline': deadline_str,
                 'status': status,
                 'is_overdue': is_overdue,
+                'point_name': (row.get('PointName') or '').strip(),
+                'control_text': (row.get('Control') or '').strip(),
+                'points': (row.get('Points') or '').strip(),
+                'teacher_note': (row.get('LastNote') or '').strip(),
+                'unavailability_reason': (row.get('UnavailabilityReason') or '').strip(),
             })
 
         logger.info(f"Обработано работ: {len(works)}")

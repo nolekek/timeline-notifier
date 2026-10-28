@@ -14,6 +14,8 @@ from app.services import (
     COMPLETED_STATUSES,
     NOT_SENT_STATUSES,
     enrich_work_item,
+    extract_file_attachments,
+    extract_urls,
     format_diagnostic_block,
     is_work_overdue,
 )
@@ -37,7 +39,8 @@ def is_maintenance_mode(app=None) -> bool:
 HELP_TEXT = (
     "<b>Что я умею</b>\n"
     "📅 Расписание — динамическое расписание пар УрГПУ (uspu.ru)\n"
-    "📊 Статус — все работы и дедлайны Timeline\n"
+    "📊 Статус — все работы, темы, баллы и дедлайны Timeline\n"
+    "🔮 Гороскоп — студенческий астропрогноз на каждый день\n"
     "📋 На сегодня — дедлайны на сегодня и завтра\n"
     "💀 Просрочки — неотправленные просроченные работы\n"
     "🔄 Проверить — зайти в Timeline прямо сейчас\n"
@@ -46,10 +49,12 @@ HELP_TEXT = (
     "Кнопки — внизу экрана. Команды:\n"
     "/schedule — расписание занятий\n"
     "/group МКТ-2531 — сменить учебную группу\n"
-    "/status — работы и дедлайны\n"
+    "/status — работы, баллы и подробности\n"
+    "/task <id> — подробная карточка задания по ID\n"
+    "/find <слово> — поиск заданий по теме и тексту\n"
+    "/horoscope — студенческий гороскоп дня\n"
     "/stats — общая статистика\n"
     "/today — горящие работы (сегодня/завтра)\n"
-    "/find слово — поиск работы по названию\n"
     "/feedback текст — написать администратору\n"
     "/overdue — долги\n"
     "/check — проверить Timeline\n"
@@ -66,13 +71,15 @@ BTN_PROFILE = '⚙️ Профиль'
 BTN_HELP = '❓ Помощь'
 BTN_SCHEDULE = '📅 Расписание'
 BTN_TODAY = '📋 На сегодня'
+BTN_HOROSCOPE = '🔮 Гороскоп'
 
-# NEW v2.1: Фурри/фембой лейблы (R5)
+# NEW v2.1/v3.0: Фурри/фембой лейблы (R5)
 BTN_STATUS_FEMBOY = '🐾 Статусик :3'
 BTN_OVERDUE_FEMBOY = '🐾 Хвостики-долги'
 BTN_CHECK_FEMBOY = '🐾 Потыкать лапкой'
 BTN_PROFILE_FEMBOY = '🎀 Профиль :з'
 BTN_SCHEDULE_FEMBOY = '📅 Расписаньице :3'
+BTN_HOROSCOPE_FEMBOY = '🐾 Гороскоп :3'
 
 # --- список работ постранично ---
 STATUS_PAGE_SIZE = 4
@@ -250,6 +257,7 @@ class TelegramBot:
             b_check = BTN_CHECK_FEMBOY
             b_profile = BTN_PROFILE_FEMBOY
             b_schedule = BTN_SCHEDULE_FEMBOY
+            b_horo = BTN_HOROSCOPE_FEMBOY
             placeholder = 'Выбери лапкой :3'
         else:
             b_status = BTN_STATUS
@@ -257,14 +265,15 @@ class TelegramBot:
             b_check = BTN_CHECK
             b_profile = BTN_PROFILE
             b_schedule = BTN_SCHEDULE
+            b_horo = BTN_HOROSCOPE
             placeholder = 'Выбери пункт меню'
 
         return {
             'keyboard': [
                 [{'text': b_status}, {'text': b_overdue}],
                 [{'text': b_check}, {'text': b_profile}],
-                [{'text': b_schedule}, {'text': BTN_HELP}],
-                [{'text': BTN_TODAY}],
+                [{'text': b_schedule}, {'text': b_horo}],
+                [{'text': BTN_TODAY}, {'text': BTN_HELP}],
             ],
             'resize_keyboard': True,
             'is_persistent': True,
@@ -274,6 +283,12 @@ class TelegramBot:
     @staticmethod
     def _profile_keyboard(user) -> dict:
         group_lbl = user.current_group if hasattr(user, 'current_group') else 'МКТ-2531'
+        horo_notify = getattr(user, 'horoscope_notify', False)
+        zodiac_key = getattr(user, 'zodiac_sign', None)
+        from app.bot.horoscope import ZODIAC_SIGNS
+        sign_info = ZODIAC_SIGNS.get(zodiac_key) if zodiac_key else None
+        sign_label = f"{sign_info['symbol']} {sign_info['name']}" if sign_info else 'не выбран'
+
         rows = [
             [{'text': f"👥 Группа: {group_lbl}", 'callback_data': 'change_group'}],
             [{'text': '🔑 Сменить логин/пароль ЭИОС', 'callback_data': 'relogin'}],
@@ -286,12 +301,52 @@ class TelegramBot:
             [{'text': ('🌅 Дайджест утром: ВКЛ ✅' if user.digest_notify
                        else '🌅 Дайджест утром: ВЫКЛ'),
               'callback_data': 'toggle_digest_notify'}],
+            [{'text': (f'🔮 Гороскоп в дайджесте: ВКЛ ({sign_label}) ✅' if horo_notify
+                       else '🔮 Гороскоп в дайджесте: ВЫКЛ'),
+              'callback_data': 'toggle_horoscope_notify'}],
         ]
+        if horo_notify:
+            rows.append([{'text': f"♈ Сменить знак: {sign_label}", 'callback_data': 'horo_pick_sign'}])
+
         if getattr(user, 'femboy_unlocked', False):
             is_active = getattr(user, 'theme_femboy', False)
             btn_txt = '🐾 Тема: ВКЛ :3' if is_active else '🐾 Тема: ВЫКЛ'
             rows.append([{'text': btn_txt, 'callback_data': 'toggle_theme_femboy'}])
         rows.append([{'text': '🗑 Удалить мои данные', 'callback_data': 'unlink'}])
+        return {'inline_keyboard': rows}
+
+    @staticmethod
+    def _horoscope_selection_keyboard(prefix: str = 'horo_view', user=None, back_to_profile: bool = False) -> dict:
+        """Сетка 4x3 для выбора знака зодиака."""
+        from app.bot.horoscope import ZODIAC_SIGNS
+        is_femboy = bool(user and getattr(user, 'theme_femboy', False))
+        signs = list(ZODIAC_SIGNS.items())
+        rows = []
+        for i in range(0, len(signs), 3):
+            row = []
+            for key, data in signs[i:i+3]:
+                label = f"{data['symbol']} {data['femboy_name'].split()[0] if is_femboy else data['name']}"
+                row.append({'text': label, 'callback_data': f"{prefix}|{key}"})
+            rows.append(row)
+        if back_to_profile:
+            rows.append([{'text': '⬅️ Назад в профиль', 'callback_data': 'profile'}])
+        return {'inline_keyboard': rows}
+
+    @staticmethod
+    def _horoscope_card_keyboard(sign: str, user=None) -> dict:
+        """Кнопки под карточкой гороскопа: выбор другого знака и привязка к дайджесту."""
+        from app.bot.horoscope import ZODIAC_SIGNS
+        is_femboy = bool(user and getattr(user, 'theme_femboy', False))
+        user_sign = getattr(user, 'zodiac_sign', None)
+        rows = []
+        if user_sign != sign:
+            sym = ZODIAC_SIGNS.get(sign, {}).get('symbol', '⭐')
+            save_lbl = f"{sym} Привязать к утреннему дайджесту" if not is_femboy else f"🐾 Привязать {sym} к дайджесту :3"
+            rows.append([{'text': save_lbl, 'callback_data': f"horo_save_digest|{sign}"}])
+        rows.append([
+            {'text': '🔮 Другой знак' if not is_femboy else '🐾 Другой знак :3', 'callback_data': 'horo_menu'},
+            {'text': '⚙️ Профиль' if not is_femboy else '🎀 Профиль :з', 'callback_data': 'profile'},
+        ])
         return {'inline_keyboard': rows}
 
     @staticmethod
@@ -637,23 +692,40 @@ class TelegramBot:
                        reverse=True)
         return items
 
-    def _status_keyboard(self, page: int, pages: int, sort: str) -> dict:
+    def _status_keyboard(self, page: int, pages: int, sort: str, chunk: list = None,
+                         start_idx: int = 1, is_femboy: bool = False) -> dict:
+        rows = []
+        if chunk:
+            action_row = []
+            for offset, it in enumerate(chunk):
+                num = start_idx + offset
+                ext_id = str(getattr(it, 'external_id', None) or (it.get('external_id') if isinstance(it, dict) else getattr(it, 'id', '')))
+                has_note = bool(getattr(it, 'teacher_note', None) or (isinstance(it, dict) and it.get('teacher_note')))
+                if is_femboy:
+                    icon = '🎀' if has_note else '🐾'
+                else:
+                    icon = '💬' if has_note else '📋'
+                action_row.append({
+                    'text': f"{icon} #{num}",
+                    'callback_data': f"wv|{ext_id}|{sort}|{page}",
+                })
+            rows.append(action_row)
+
         nav = []
         if page > 1:
             nav.append({'text': '⬅️ Назад', 'callback_data': f'st|{sort}|{page - 1}'})
         nav.append({'text': f'стр. {page}/{pages}', 'callback_data': 'noop'})
         if page < pages:
             nav.append({'text': 'Вперёд ➡️', 'callback_data': f'st|{sort}|{page + 1}'})
+        rows.append(nav)
 
         other = SORT_DEADLINE if sort == SORT_NEW else SORT_NEW
         toggle = ('⏰ По срокам' if sort == SORT_NEW else '🆕 Новые сверху')
-        return {'inline_keyboard': [
-            nav,
-            [
-                {'text': toggle, 'callback_data': f'st|{other}|1'},
-                {'text': '🔽 Компактно', 'callback_data': 'st_compact'},
-            ],
-        ]}
+        rows.append([
+            {'text': toggle, 'callback_data': f'st|{other}|1'},
+            {'text': '🔽 Компактно', 'callback_data': 'st_compact'},
+        ])
+        return {'inline_keyboard': rows}
 
     def _build_status_page(self, user, page: int = 1,
                            sort: str = SORT_NEW) -> tuple[str, dict | None]:
@@ -695,10 +767,19 @@ class TelegramBot:
             e = _enrich(it)
             icon = _status_icon(e['status'], e['is_overdue'])
             lines.append(f"{icon} <b>{start + offset + 1}. {html.escape(e['discipline'])}</b>")
+            if e.get('point_name'):
+                lines.append(f"   📌 Тема: {html.escape(e['point_name'])}")
             if e['deadline']:
                 countdown = _format_countdown(e['deadline'])
-                lines.append(f"   Срок: {e['deadline']}" + (f'  {countdown}' if countdown else ''))
-            lines.append(f"   Статус: {e['status']}")
+                lines.append(f"   ⏳ Срок: {e['deadline']}" + (f'  ({countdown})' if countdown else ''))
+            detected_files = extract_file_attachments(f"{e.get('control_text', '')} {e.get('teacher_note', '')}")
+            if detected_files:
+                file_badge = ", ".join(f"<code>{html.escape(f)}</code>" for f in detected_files[:2])
+                lines.append(f"   📁 Файл: {file_badge}")
+            if e.get('points'):
+                lines.append(f"   🎯 Баллы: {html.escape(e['points'])} | Статус: {e['status']}")
+            else:
+                lines.append(f"   Статус: {e['status']}")
             lines.append("")
 
         if show_error:
@@ -710,7 +791,109 @@ class TelegramBot:
 
         lines.append(joke_html('status_last' if page == pages else 'status', page - 1, user=user))
 
-        return "\n".join(lines), self._status_keyboard(page, pages, sort)
+        return "\n".join(lines), self._status_keyboard(
+            page, pages, sort, chunk=chunk, start_idx=start + 1,
+            is_femboy=getattr(user, 'theme_femboy', False)
+        )
+
+    def _build_work_detail(self, user, external_id: str, sort: str = SORT_NEW, page: int = 1) -> tuple[str, dict]:
+        """Экран детального просмотра работы: тема, задание, баллы, рецензия преподавателя."""
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._build_work_detail(user, external_id, sort, page)
+
+        from app.models import WorkItem
+        from app.services import enrich_work_item as _enrich
+
+        item = WorkItem.query.filter_by(user_id=user.id, external_id=str(external_id)).first()
+        if not item and str(external_id).isdigit():
+            item = WorkItem.query.filter_by(user_id=user.id, id=int(external_id)).first()
+
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
+
+        if not item:
+            err_text = "😿 Заданьице не найдено :3" if is_femboy else "⚠️ Задание не найдено в базе бота."
+            kb = {'inline_keyboard': [[{'text': '⬅️ Назад к списку', 'callback_data': f'st|{sort}|{page}'}]]}
+            return err_text, kb
+
+        e = _enrich(item)
+        icon = _status_icon(e['status'], e['is_overdue'])
+        countdown = _format_countdown(e['deadline']) if e.get('deadline') else ''
+
+        lines = [
+            f"{icon} <b>{html.escape(e['discipline'])}</b>",
+            "",
+        ]
+
+        if e.get('point_name'):
+            topic_label = "📌 <b>Тема:</b>" if not is_femboy else "🐾 <b>Тема заданьица:</b>"
+            lines.append(f"{topic_label} {html.escape(e['point_name'])}")
+
+        if e.get('deadline'):
+            dl_label = "⏳ <b>Срок сдачи:</b>" if not is_femboy else "⏳ <b>Дедлайнчик:</b>"
+            cd_str = f" <i>({countdown})</i>" if countdown else ""
+            lines.append(f"{dl_label} {e['deadline']}{cd_str}")
+
+        lines.append(f"📊 <b>Статус:</b> {e['status']}")
+
+        if e.get('points'):
+            lines.append(f"🎯 <b>Баллы:</b> <code>{html.escape(e['points'])}</code>")
+
+        control_text = e.get('control_text') or ''
+        teacher_note = e.get('teacher_note') or ''
+        combined_text = f"{control_text} {teacher_note}"
+        extracted_files = extract_file_attachments(combined_text)
+        extracted_urls = extract_urls(combined_text)
+
+        if extracted_files:
+            files_label = "📁 <b>Файлы к заданию:</b>" if not is_femboy else "🐾 <b>Файлики к заданьицу:</b>"
+            files_badges = " ".join(f"<code>{html.escape(f)}</code>" for f in extracted_files)
+            lines.append(f"{files_label} {files_badges}")
+        elif extracted_urls:
+            urls_label = "🔗 <b>Материалы по ссылке:</b>" if not is_femboy else "🎀 <b>Материальчики:</b>"
+            urls_badges = ", ".join(f'<a href="{html.escape(u)}">{html.escape(u[:40])}…</a>' if len(u) > 40 else f'<a href="{html.escape(u)}">{html.escape(u)}</a>' for u in extracted_urls)
+            lines.append(f"{urls_label} {urls_badges}")
+        else:
+            files_label = "📎 <b>Вложение:</b>" if not is_femboy else "🐾 <b>Файлик:</b>"
+            if e['status'] in ('Отправлена', 'Проверена', 'Зачтена'):
+                lines.append(f"{files_label} <i>работа сдана через Timeline (просмотр в веб-версии)</i>" if not is_femboy else f"{files_label} <i>сдано в Timeline :3</i>")
+            else:
+                lines.append(f"{files_label} <i>не прикреплено (задание сформулировано текстом)</i>" if not is_femboy else f"{files_label} <i>не прикреплён (заданьице текстом) :3</i>")
+
+        if e.get('unavailability_reason'):
+            lines.append("")
+            lines.append(f"<blockquote>⚠️ <b>Доступность:</b> {html.escape(e['unavailability_reason'])}</blockquote>")
+
+        lines.append("")
+
+        task_label = "📋 <b>Задание преподавателя:</b>" if not is_femboy else "🐾 <b>Текст заданьица:</b>"
+        if control_text:
+            if len(control_text) > 3000:
+                control_text = control_text[:2950] + "… <i>[текст обрезан по лимиту]</i>"
+            lines.append(task_label)
+            lines.append(f"<blockquote>{html.escape(control_text)}</blockquote>")
+        else:
+            lines.append("<i>Текст задания в системе не указан.</i>")
+
+        if teacher_note:
+            lines.append("")
+            note_label = "💬 <b>Рецензия преподавателя:</b>" if not is_femboy else "🎀 <b>Комментарик преподавателя:</b>"
+            if len(teacher_note) > 1000:
+                teacher_note = teacher_note[:950] + "… <i>[текст обрезан]</i>"
+            lines.append(note_label)
+            lines.append(f"<blockquote>{html.escape(teacher_note)}</blockquote>")
+
+        btn_open = "🐾 Открыть в Timeline :3" if is_femboy else "🌐 Открыть в Timeline"
+        btn_back = "⬅️ Лапки назад" if is_femboy else "⬅️ Назад к списку"
+
+        keyboard = {
+            'inline_keyboard': [
+                [{'text': btn_open, 'url': 'https://timeline.rsvpu.ru/StudentWork/Send'}],
+                [{'text': btn_back, 'callback_data': f'st|{sort}|{page}'}],
+            ]
+        }
+
+        return "\n".join(lines), keyboard
 
     def _build_status_compact(self, user) -> tuple[str, dict]:
         """Компактная сводка по работам (без подробного списка)."""
@@ -835,6 +1018,13 @@ class TelegramBot:
         schedule_notify_str = 'ВКЛ ✅' if getattr(user, 'schedule_notify', False) else 'ВЫКЛ'
         digest_notify_str = 'ВКЛ ✅' if getattr(user, 'digest_notify', False) else 'ВЫКЛ'
 
+        horo_notify = getattr(user, 'horoscope_notify', False)
+        zodiac_key = getattr(user, 'zodiac_sign', None)
+        from app.bot.horoscope import ZODIAC_SIGNS
+        sign_info = ZODIAC_SIGNS.get(zodiac_key) if zodiac_key else None
+        sign_label = f"{sign_info['symbol']} {sign_info['name']}" if sign_info else 'не выбран'
+        horo_notify_str = f"ВКЛ ({sign_label}) ✅" if horo_notify else f"ВЫКЛ (знак: {sign_label})"
+
         streak = getattr(user, 'fail_streak', 0) or 0
         error_section = ""
         if user.last_error and streak >= 3:
@@ -852,6 +1042,7 @@ class TelegramBot:
             f"Уведомления: {'включены' if user.notify_enabled else 'выключены'}\n"
             f"Расписание на завтра: {schedule_notify_str}\n"
             f"Дайджест утром: {digest_notify_str}\n"
+            f"Гороскоп в дайджесте: {horo_notify_str}\n"
             f"Интервал проверки: {interval // 60} мин\n"
             f"Последняя проверка: "
             f"{user.last_check_at.strftime('%d.%m.%Y %H:%M') if user.last_check_at else '—'}\n"
@@ -1087,9 +1278,100 @@ class TelegramBot:
             )
             return
 
+        # --- Гороскоп доступен всегда (даже до входа в ЭИОС) ---
+        if data.startswith(('horo|', 'horo_view|')):
+            parts = data.split('|')
+            sign = parts[1]
+            from app.bot.horoscope import generate_horoscope, format_horoscope_html
+            h = generate_horoscope(sign, user=user)
+            self.answer_callback(cb_id)
+            self.edit_message(chat_id, message_id, format_horoscope_html(h),
+                              self._horoscope_card_keyboard(sign, user=user))
+            return
+
+        if data == 'horo_menu':
+            self.answer_callback(cb_id)
+            text = "🔮 <b>Выбери знак зодиака на сегодня:</b>"
+            self.edit_message(chat_id, message_id, text,
+                              self._horoscope_selection_keyboard(prefix='horo_view', user=user))
+            return
+
+        if data.startswith('horo_save_digest|'):
+            parts = data.split('|')
+            from app.bot.horoscope import normalize_zodiac_sign, ZODIAC_SIGNS, generate_horoscope, format_horoscope_html
+            sign = normalize_zodiac_sign(parts[1])
+            if sign:
+                user.zodiac_sign = sign
+                user.horoscope_notify = True
+                db.session.commit()
+                sign_name = ZODIAC_SIGNS.get(sign, {}).get('name', sign)
+                self.answer_callback(cb_id, f"Знак сохранён: {sign_name} ✅", show_alert=True)
+                h = generate_horoscope(sign, user=user)
+                self.edit_message(chat_id, message_id, format_horoscope_html(h),
+                                  self._horoscope_card_keyboard(sign, user=user))
+            else:
+                self.answer_callback(cb_id, "Неизвестный знак")
+            return
+
+        if data == 'horo_pick_sign':
+            self.answer_callback(cb_id)
+            text = "🔮 <b>Выбери знак зодиака для утреннего дайджеста:</b>"
+            self.edit_message(chat_id, message_id, text,
+                              self._horoscope_selection_keyboard(prefix='horo_digest_set', user=user, back_to_profile=True))
+            return
+
+        if data.startswith('horo_digest_set|'):
+            parts = data.split('|')
+            from app.bot.horoscope import normalize_zodiac_sign, ZODIAC_SIGNS
+            sign = normalize_zodiac_sign(parts[1])
+            if sign:
+                user.zodiac_sign = sign
+                user.horoscope_notify = True
+                db.session.commit()
+                sign_name = ZODIAC_SIGNS.get(sign, {}).get('name', sign)
+                self.answer_callback(cb_id, f"Гороскоп включён: {sign_name} ✅")
+            else:
+                self.answer_callback(cb_id)
+            self.edit_message(chat_id, message_id, self._build_profile_text(user),
+                              self._profile_keyboard(user))
+            return
+
+        if data == 'toggle_horoscope_notify':
+            if getattr(user, 'horoscope_notify', False):
+                user.horoscope_notify = False
+                db.session.commit()
+                self.answer_callback(cb_id, '🔮 Гороскоп в дайджесте: ВЫКЛ')
+                self.edit_message(chat_id, message_id, self._build_profile_text(user),
+                                  self._profile_keyboard(user))
+            else:
+                if getattr(user, 'zodiac_sign', None):
+                    user.horoscope_notify = True
+                    db.session.commit()
+                    from app.bot.horoscope import ZODIAC_SIGNS
+                    sname = ZODIAC_SIGNS.get(user.zodiac_sign, {}).get('name', user.zodiac_sign)
+                    self.answer_callback(cb_id, f'🔮 Гороскоп в дайджесте: ВКЛ ({sname}) ✅')
+                    self.edit_message(chat_id, message_id, self._build_profile_text(user),
+                                      self._profile_keyboard(user))
+                else:
+                    self.answer_callback(cb_id, 'Выбери свой знак зодиака')
+                    text = "🔮 <b>Выбери свой знак зодиака для утреннего дайджеста (08:00):</b>"
+                    self.edit_message(chat_id, message_id, text,
+                                      self._horoscope_selection_keyboard(prefix='horo_digest_set', user=user, back_to_profile=True))
+            return
+
         if not user.is_registered:
             self.answer_callback(cb_id, 'Сначала /login')
             self._ask_login(user, chat_id)
+            return
+
+        if data.startswith(('wv|', 'work_view|')):
+            parts = data.split('|')
+            ext_id = parts[1]
+            sort = parts[2] if len(parts) > 2 else 'new'
+            page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 1
+            text, keyboard = self._build_work_detail(user, ext_id, sort=sort, page=page)
+            self.answer_callback(cb_id)
+            self.edit_message(chat_id, message_id, text, keyboard)
             return
 
         if data == 'status' or data.startswith('st|'):
@@ -1258,6 +1540,24 @@ class TelegramBot:
                 or norm in ('расписание', 'расписаньице', 'пары')
                 or text == BTN_SCHEDULE_FEMBOY):
             self._cmd_schedule(user, chat_id, mode='today')
+            return
+
+        # --- Гороскоп доступен для любого пользователя ---
+        if (low.startswith(('/horoscope', '/horo', '/гороскоп'))
+                or norm in ('гороскоп', 'гороскоп з')
+                or text in (BTN_HOROSCOPE, BTN_HOROSCOPE_FEMBOY)):
+            self._cmd_horoscope(user, chat_id)
+            return
+
+        # --- Детальный просмотр работы по ID (/task или /work) ---
+        if low.startswith(('/task', '/work', '/задание', '/работа')):
+            parts = text.split()
+            if len(parts) > 1 and parts[1].strip():
+                ext_id = parts[1].strip()
+                card_text, kb = self._build_work_detail(user, ext_id)
+                self.send_message(chat_id, card_text, reply_markup=kb)
+            else:
+                self.send_message(chat_id, "ℹ️ Использование: <code>/task 479796</code> (укажи ID задания)")
             return
         if low.startswith(('/group', '/группа')):
             parts = text.split(maxsplit=1)
@@ -1472,8 +1772,22 @@ class TelegramBot:
 
         self.send_message(chat_id, '\n'.join(lines))
 
+    def _cmd_horoscope(self, user, chat_id: str):
+        """Команда /horoscope: вывод гороскопа на сегодня или меню выбора знака."""
+        zodiac_key = getattr(user, 'zodiac_sign', None)
+        if zodiac_key:
+            from app.bot.horoscope import generate_horoscope, format_horoscope_html
+            h = generate_horoscope(zodiac_key, user=user)
+            text = format_horoscope_html(h)
+            kb = self._horoscope_card_keyboard(zodiac_key, user=user)
+            self.send_message(chat_id, text, reply_markup=kb)
+        else:
+            text = "🔮 <b>Выбери свой знак зодиака на сегодня:</b>"
+            kb = self._horoscope_selection_keyboard(prefix='horo_view', user=user)
+            self.send_message(chat_id, text, reply_markup=kb)
+
     def _cmd_find(self, user, chat_id: str, query: str):
-        """Поиск работы по названию дисциплины."""
+        """Поиск работы по названию дисциплины, теме или тексту задания."""
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
 
@@ -1483,24 +1797,51 @@ class TelegramBot:
 
         q_lower = query.lower()
         items = WorkItem.query.filter_by(user_id=user.id).all()
-        matched = [it for it in items if q_lower in (it.discipline or '').lower()]
+        matched = []
+        for it in items:
+            disc = (it.discipline or '').lower()
+            pname = (getattr(it, 'point_name', '') or '').lower()
+            ctrl = (getattr(it, 'control_text', '') or '').lower()
+            if q_lower in disc or q_lower in pname or q_lower in ctrl:
+                matched.append(it)
+
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
 
         if not matched:
             self.send_message(chat_id, f"🔍 По запросу «<b>{html.escape(query)}</b>» ничего не найдено.")
             return
 
         lines = [f"🔍 <b>Результаты поиска ({len(matched)}):</b>\n"]
-        for idx, it in enumerate(matched, start=1):
+        action_row = []
+        for idx, it in enumerate(matched[:10], start=1):
             e = _enrich(it)
             icon = _status_icon(e['status'], e['is_overdue'])
             countdown = _format_countdown(e['deadline']) if e.get('deadline') else ''
             lines.append(f"{icon} <b>{idx}. {html.escape(e['discipline'])}</b>")
+            if e.get('point_name'):
+                lines.append(f"   📌 Тема: {html.escape(e['point_name'])}")
             if e['deadline']:
-                lines.append(f"   Срок: {e['deadline']}" + (f"  {countdown}" if countdown else ""))
-            lines.append(f"   Статус: {e['status']}")
+                lines.append(f"   ⏳ Срок: {e['deadline']}" + (f"  ({countdown})" if countdown else ""))
+            if e.get('points'):
+                lines.append(f"   🎯 Баллы: {html.escape(e['points'])} | Статус: {e['status']}")
+            else:
+                lines.append(f"   Статус: {e['status']}")
             lines.append("")
 
-        self.send_message(chat_id, "\n".join(lines))
+            ext_id = str(it.external_id or it.id)
+            has_note = bool(getattr(it, 'teacher_note', None))
+            btn_icon = ('🎀' if has_note else '🐾') if is_femboy else ('💬' if has_note else '📋')
+            action_row.append({
+                'text': f"{btn_icon} #{idx}",
+                'callback_data': f"wv|{ext_id}|new|1",
+            })
+
+        keyboard = None
+        if action_row:
+            kb_rows = [action_row[i:i+4] for i in range(0, len(action_row), 4)]
+            keyboard = {'inline_keyboard': kb_rows}
+
+        self.send_message(chat_id, "\n".join(lines), reply_markup=keyboard)
 
     def _cmd_feedback(self, user, chat_id: str, msg_text: str):
         """Отправка отзыва / сообщения администратору бота."""
@@ -1764,8 +2105,15 @@ def notify_new_works(sender, chat_id, works: list, user: Any = None):
             lines.append("  ⚠️ Срок сдачи уже прошёл!")
         else:
             lines.append(f"• <b>{html.escape(w['discipline'])}</b>")
+        if w.get('point_name'):
+            lines.append(f"  📌 Тема: {html.escape(w['point_name'])}")
         if w.get('deadline'):
             lines.append(f"  Срок: {w['deadline']}")
+        detected_files = extract_file_attachments(f"{w.get('control_text', '')} {w.get('teacher_note', '')}")
+        if detected_files:
+            lines.append(f"  📁 Файл: " + ", ".join(f"<code>{html.escape(f)}</code>" for f in detected_files[:2]))
+        if w.get('points'):
+            lines.append(f"  🎯 Баллы: {html.escape(w['points'])}")
         lines.append(f"  Статус: {w.get('status') or 'Не отправлена'}")
         lines.append("")
     lines.append(joke_html('new_works', user=user))
@@ -1789,10 +2137,19 @@ def notify_status_changes(sender, chat_id, changes: list, user: Any = None):
             lines.append(f"💀 Просрочена: <b>{html.escape(c['discipline'])}</b>")
         else:
             lines.append(f"• <b>{html.escape(c['discipline'])}</b>")
+        if c.get('point_name'):
+            lines.append(f"  📌 Тема: {html.escape(c['point_name'])}")
         if c.get('deadline'):
             lines.append(f"  Срок: {c['deadline']}")
+        detected_files = extract_file_attachments(f"{c.get('control_text', '')} {c.get('teacher_note', '')}")
+        if detected_files:
+            lines.append(f"  📁 Файл: " + ", ".join(f"<code>{html.escape(f)}</code>" for f in detected_files[:2]))
         lines.append(f"  Статус: {c['old_status'] or 'Не отправлена'} → "
                      f"<b>{c['new_status'] or 'Не отправлена'}</b>")
+        if c.get('points'):
+            lines.append(f"  🎯 Баллы: {html.escape(c['points'])}")
+        if c.get('teacher_note'):
+            lines.append(f"  💬 <b>Рецензия преподавателя:</b>\n<blockquote>{html.escape(c['teacher_note'])}</blockquote>")
         lines.append("")
     lines.append(joke_html('status_change', user=user))
     sender.send_message(chat_id, "\n".join(lines))

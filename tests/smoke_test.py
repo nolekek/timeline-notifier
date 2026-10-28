@@ -220,12 +220,14 @@ with app.app_context():
     assert 'стр. 1/2' in page1 and '▰' in page1  # счётчик страниц и тупая полоска
     assert any(j in page1 for j in JOKES['status']), page1
     assert [b['callback_data'] for row in kb1['inline_keyboard'] for b in row] == [
+        'wv|p0|new|1', 'wv|p1|new|1', 'wv|p2|new|1', 'wv|p3|new|1',
         'noop', 'st|new|2', 'st|dl|1', 'st_compact'], kb1
 
     page2, kb2 = bot._build_status_page(user_p, 2)
     assert 'Работа 4' in page2 and 'Работа 0' not in page2, page2
     assert any(j in page2 for j in JOKES['status_last']), page2
     assert [b['callback_data'] for row in kb2['inline_keyboard'] for b in row] == [
+        'wv|p4|new|2', 'wv|p5|new|2',
         'st|new|1', 'noop', 'st|dl|1', 'st_compact'], kb2
 
     by_deadline, _ = bot._build_status_page(user_p, 1, SORT_DEADLINE)
@@ -506,6 +508,216 @@ with app.app_context():
     finally:
         app.config['ADMIN_PASSWORD'] = ''
         app.config['ADMIN_USER'] = ''
+
+    # =========================================================================
+    # 12. [v3.1.0] Парсинг детальных полей заданий из SendGrid
+    # =========================================================================
+    import json as _json_lib
+    from app.parser.scraper import TimelineScraper
+    from app.services import enrich_work_item
+
+    sample_json_path = os.path.join(_here, 'docs', 'sample_sendgrid_response.json')
+    with open(sample_json_path, 'r', encoding='utf-8') as f:
+        sample_data = _json_lib.load(f)
+
+    class DummyAuth:
+        verify_ssl = False
+        def get_session(self):
+            class DummySession:
+                def get(self, url, **kw):
+                    class Resp:
+                        def raise_for_status(self): pass
+                        def json(self): return sample_data
+                        text = _json_lib.dumps(sample_data)
+                    return Resp()
+            return DummySession()
+
+    scraper = TimelineScraper(DummyAuth(), 'http://fake/send', 'http://fake/grid', semester_id=30)
+    works = scraper.fetch_works()
+    assert len(works) == 16, f"Ожидалось 16 работ, получено {len(works)}"
+
+    # Проверяем работу 475622 (Психология: есть рецензия, баллы 3 из 3, недоступность)
+    w_psy = next(w for w in works if w['external_id'] == '475622')
+    assert w_psy['point_name'] == 'Лекция 1. Модуль 2. Возрастная психология.', w_psy['point_name']
+    assert w_psy['control_text'] == 'Выполнить работу.', w_psy['control_text']
+    assert w_psy['points'] == '3 из 3', w_psy['points']
+    assert 'Никита, хорошая работа' in w_psy['teacher_note'], w_psy['teacher_note']
+    assert 'Инструмент был доступен' in w_psy['unavailability_reason'], w_psy['unavailability_reason']
+
+    # Проверяем работу 479796 (Нормативно-правовые основы: длинное задание)
+    w_law = next(w for w in works if w['external_id'] == '479796')
+    assert w_law['point_name'] == 'Анализ сведений с официальных сайтов'
+    assert 'Анализ хода выборов' in w_law['control_text']
+    assert w_law['points'] == '0 из 10'
+
+    # Сохраняем в БД и проверяем enrich_work_item
+    user_v3 = User(chat_id='999333', is_registered=True, is_active=True, state='ready')
+    db.session.add(user_v3)
+    db.session.commit()
+
+    item_v3 = WorkItem(
+        user_id=user_v3.id,
+        external_id=w_psy['external_id'],
+        discipline=w_psy['discipline'],
+        deadline=w_psy['deadline'],
+        status=w_psy['status'],
+        is_overdue=w_psy['is_overdue'],
+        point_name=w_psy['point_name'],
+        control_text=w_psy['control_text'],
+        points=w_psy['points'],
+        teacher_note=w_psy['teacher_note'],
+        unavailability_reason=w_psy['unavailability_reason'],
+    )
+    db.session.add(item_v3)
+    db.session.commit()
+
+    enriched = enrich_work_item(item_v3)
+    assert enriched['point_name'] == w_psy['point_name']
+    assert enriched['points'] == '3 из 3'
+    assert enriched['teacher_note'] == w_psy['teacher_note']
+
+    # =========================================================================
+    # 13. [v3.1.0] Детальный просмотр задания, <blockquote>, обрезка и команды
+    # =========================================================================
+    # 13.1 Детальная карточка с цитатами <blockquote>
+    card_text, card_kb = bot._build_work_detail(user_v3, w_psy['external_id'])
+    assert '<blockquote>' in card_text and '</blockquote>' in card_text
+    assert '3 из 3' in card_text
+    assert 'Никита, хорошая работа' in card_text
+    assert 'Инструмент был доступен' in card_text
+    assert any(b.get('url') == 'https://timeline.rsvpu.ru/StudentWork/Send'
+               for row in card_kb['inline_keyboard'] for b in row)
+
+    # 13.2 Проверка безопасной обрезки при очень длинном тексте (> 3500 символов)
+    item_v3.control_text = 'A' * 4500
+    db.session.commit()
+    long_card_text, _ = bot._build_work_detail(user_v3, w_psy['external_id'])
+    assert len(long_card_text) < 4096, f"Текст превышает лимит Telegram: {len(long_card_text)}"
+    assert '[текст обрезан по лимиту]' in long_card_text
+
+    # 13.3 Прямой вызов /task <id>
+    reset_outbox()
+    bot._handle_message(msg('999333', f"/task {w_psy['external_id']}"))
+    assert any('Психология' in t for t in texts()), texts()
+
+    # 13.4 Поиск /find по названию, теме и тексту задания
+    reset_outbox()
+    bot._handle_message(msg('999333', "/find Возрастная"))
+    assert any('Результаты поиска' in t for t in texts()), texts()
+
+    # =========================================================================
+    # 14. [v3.1.0] Студенческий гороскоп: детерминизм и 12 знаков
+    # =========================================================================
+    from app.bot.horoscope import (
+        ZODIAC_SIGNS,
+        format_horoscope_html,
+        generate_horoscope,
+        get_daily_horoscope_short,
+        normalize_zodiac_sign,
+    )
+
+    # 14.1 Все 12 знаков зодиака корректно нормализуются
+    assert len(ZODIAC_SIGNS) == 12
+    for sign_key in ZODIAC_SIGNS:
+        assert normalize_zodiac_sign(sign_key) == sign_key
+        assert normalize_zodiac_sign(ZODIAC_SIGNS[sign_key]['name']) == sign_key
+
+    # 14.2 Детерминированность: два вызова в один день дают 100% идентичный результат
+    h1 = generate_horoscope('aries')
+    h2 = generate_horoscope('aries')
+    assert h1['prediction'] == h2['prediction']
+    assert h1['lucky_item'] == h2['lucky_item']
+    assert h1['advice'] == h2['advice']
+    assert h1['avtomat_chance'] == h2['avtomat_chance']
+
+    # 14.3 Форматирование с <blockquote> и короткий вариант для дайджеста
+    h_html = format_horoscope_html(h1)
+    assert '<blockquote>' in h_html and '</blockquote>' in h_html
+    assert 'Шанс автомата' in h_html
+
+    h_short = get_daily_horoscope_short('leo')
+    assert '<blockquote>' in h_short and 'Лев' in h_short
+
+    # 14.4 Фембой-локализация гороскопа (:3, лапки, мур-мур)
+    user_v3.theme_femboy = True
+    h_femboy = generate_horoscope('scorpio', user=user_v3)
+    assert h_femboy['is_femboy'] is True
+    h_femboy_html = format_horoscope_html(h_femboy)
+    assert ':3' in h_femboy_html or '🐾' in h_femboy_html or 'мяу' in h_femboy_html.lower()
+
+    # 14.5 Интерактивный выбор знака через кнопки
+    reset_outbox()
+    bot._handle_message(msg('999333', "/horoscope"))
+    assert any('Выбери' in t or 'гороскоп' in t.lower() for t in texts()), texts()
+
+    # 14.6 Утренний дайджест с включенным гороскопом
+    user_v3.digest_notify = True
+    user_v3.horoscope_notify = True
+    user_v3.zodiac_sign = 'aquarius'
+    user_v3.theme_femboy = False
+    db.session.commit()
+
+    reset_outbox()
+    from app.scheduler.jobs import send_daily_digest
+    orig_sender_func = bot_mod.get_sender
+    bot_mod.get_sender = lambda _app: DummySender(OUTBOX)
+    OUTBOX.clear()
+    send_daily_digest(app)
+    bot_mod.get_sender = orig_sender_func
+
+    digest_texts = [txt for cid, txt in OUTBOX if cid == '999333']
+    assert len(digest_texts) > 0, "Дайджест не был отправлен"
+    assert any('Гороскоп дня' in t and 'Водолей' in t for t in digest_texts), digest_texts
+
+    # =========================================================================
+    # 16. [v3.1.0] Определение названий и расширений файлов заданий (extract_file_attachments)
+    # =========================================================================
+    from app.services import extract_file_attachments, extract_urls
+
+    sample_txt = (
+        "Выполнить практическую работу №1. Методичка в файле Metodichka_2026.pdf. "
+        "Исходные данные: dataset.zip и lab1_variant_05.DOCX. "
+        "Ссылка на диск: https://disk.yandex.ru/d/abc123xyz. "
+        "Сдать до конца недели."
+    )
+    files = extract_file_attachments(sample_txt)
+    assert files == ['Metodichka_2026.pdf', 'dataset.zip', 'lab1_variant_05.DOCX'], files
+    urls = extract_urls(sample_txt)
+    assert urls == ['https://disk.yandex.ru/d/abc123xyz'], urls
+
+    # Проверка работы без файлов
+    assert extract_file_attachments("Обычный текст задания без файлов. Лекция 1. Модуль 2.") == []
+
+    # Проверка отображения в карточке работы с файлом
+    item_file = WorkItem(
+        user_id=user_v3.id,
+        external_id='999003',
+        discipline='Информатика',
+        deadline='30.12.2026 23:59',
+        status='Не отправлена',
+        control_text='Лабораторная работа. Задание в task_01.docx',
+    )
+    db.session.add(item_file)
+    db.session.commit()
+
+    detail_file_text, _ = bot._build_work_detail(user_v3, '999003')
+    assert 'Файлы к заданию:' in detail_file_text
+    assert '<code>task_01.docx</code>' in detail_file_text
+
+    # Проверка карточки без файлов
+    item_nofile = WorkItem(
+        user_id=user_v3.id,
+        external_id='999004',
+        discipline='Философия',
+        deadline='30.12.2026 23:59',
+        status='Не отправлена',
+        control_text='Подготовить устный ответ на вопросы к семинару.',
+    )
+    db.session.add(item_nofile)
+    db.session.commit()
+
+    detail_nofile_text, _ = bot._build_work_detail(user_v3, '999004')
+    assert 'не прикреплено (задание сформулировано текстом)' in detail_nofile_text
 
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")
