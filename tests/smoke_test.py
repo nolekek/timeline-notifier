@@ -716,8 +716,25 @@ with app.app_context():
     db.session.add(item_nofile)
     db.session.commit()
 
-    detail_nofile_text, _ = bot._build_work_detail(user_v3, '999004')
+    detail_nofile_text, kb_nofile = bot._build_work_detail(user_v3, '999004')
     assert 'не прикреплено (задание сформулировано текстом)' in detail_nofile_text
+    assert any(b.get('url') == 'https://timeline.rsvpu.ru/Timeline' for row in kb_nofile['inline_keyboard'] for b in row)
+    assert any(b.get('url') == 'https://timeline.rsvpu.ru/StudentWork/Send' for row in kb_nofile['inline_keyboard'] for b in row)
+
+    # Проверка подсказки при типовой заглушке «Выполнить работу.»
+    item_stub = WorkItem(
+        user_id=user_v3.id,
+        external_id='999005',
+        discipline='Психология',
+        deadline='30.12.2026 23:59',
+        status='Не отправлена',
+        control_text='Выполнить работу.',
+    )
+    db.session.add(item_stub)
+    db.session.commit()
+
+    detail_stub_text, _ = bot._build_work_detail(user_v3, '999005')
+    assert 'В поле задания указано «Выполнить работу»' in detail_stub_text
 
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

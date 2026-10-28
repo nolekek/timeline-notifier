@@ -809,6 +809,15 @@ class TelegramBot:
         if not item and str(external_id).isdigit():
             item = WorkItem.query.filter_by(user_id=user.id, id=int(external_id)).first()
 
+        # Автоматическая синхронизация при первом открытии после миграции v3.1, если поля еще NULL
+        if item and item.control_text is None and item.point_name is None:
+            try:
+                from app.scheduler.jobs import check_user
+                check_user(self.app, user.id, force=True, notify=False)
+                item = WorkItem.query.filter_by(user_id=user.id, external_id=str(external_id)).first() or item
+            except Exception as ex:
+                logger.warning(f"Ошибка автосинхронизации задания {external_id}: {ex}")
+
         is_femboy = bool(getattr(user, 'theme_femboy', False))
 
         if not item:
@@ -872,8 +881,19 @@ class TelegramBot:
                 control_text = control_text[:2950] + "… <i>[текст обрезан по лимиту]</i>"
             lines.append(task_label)
             lines.append(f"<blockquote>{html.escape(control_text)}</blockquote>")
+
+            clean_c = control_text.strip().rstrip('.').lower()
+            if clean_c in ('выполнить работу', 'выполнить задание', 'работа', 'задание'):
+                hint = ("💡 <i>В поле задания указано «Выполнить работу». Сами материалы и файлы лекции прикреплены в графике Timeline (кнопка ниже).</i>"
+                        if not is_femboy else
+                        "🐾 <i>В заданьице написано «Выполнить работу». Файлики и методички прикреплены в графике Timeline (лапками по кнопочке ниже) :3</i>")
+                lines.append(hint)
         else:
-            lines.append("<i>Текст задания в системе не указан.</i>")
+            hint = ("<i>В поле задания формулировка не заполнена преподавателем. Материалы и файлы лекции прикреплены в графике Timeline (кнопка ниже).</i>"
+                    if not is_femboy else
+                    "<i>В заданьице буковки не написаны. Файлики ищи в графике Timeline :3</i>")
+            lines.append(task_label)
+            lines.append(f"<blockquote>{hint}</blockquote>")
 
         if teacher_note:
             lines.append("")
@@ -883,12 +903,16 @@ class TelegramBot:
             lines.append(note_label)
             lines.append(f"<blockquote>{html.escape(teacher_note)}</blockquote>")
 
-        btn_open = "🐾 Открыть в Timeline :3" if is_femboy else "🌐 Открыть в Timeline"
+        btn_timeline = "📅 График в Timeline" if not is_femboy else "📅 График в Timeline :3"
+        btn_send = "📤 Сдать работу" if not is_femboy else "🐾 Сдать работу :3"
         btn_back = "⬅️ Лапки назад" if is_femboy else "⬅️ Назад к списку"
 
         keyboard = {
             'inline_keyboard': [
-                [{'text': btn_open, 'url': 'https://timeline.rsvpu.ru/StudentWork/Send'}],
+                [
+                    {'text': btn_timeline, 'url': 'https://timeline.rsvpu.ru/Timeline'},
+                    {'text': btn_send, 'url': 'https://timeline.rsvpu.ru/StudentWork/Send'},
+                ],
                 [{'text': btn_back, 'callback_data': f'st|{sort}|{page}'}],
             ]
         }
