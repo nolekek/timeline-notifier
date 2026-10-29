@@ -834,5 +834,109 @@ with app.app_context():
     assert '<b>📅 Неделя 15.06 – 21.06 — МКТ-2531</b>' in week_text
     assert week_text.count('<blockquote>') == week_text.count('</blockquote>') == 2
 
+    # =========================================================================
+    # 19. [v3.2.0] Расширенная фембой-тема и первое правило в /status
+    # =========================================================================
+    from app.bot.telegram_bot import (
+        BTN_HELP,
+        BTN_HELP_FEMBOY,
+        BTN_STATUS,
+        BTN_STATUS_FEMBOY,
+        BTN_TODAY,
+        BTN_TODAY_FEMBOY,
+    )
+
+    RULE_ONE = "<code>ПЕРВОЕ ПРАВИЛО ФЕМБОЙ ТЕМЫ — НИКОМУ НЕ ГОВОРИТЬ О ФЕМБОЙ ТЕМЕ</code>"
+
+    # 19.1 Пользователь с выключенной фембой-темой (обычный вид)
+    user_normal = User(chat_id='888111', is_registered=True, is_active=True,
+                       theme_femboy=False, state='ready')
+    db.session.add(user_normal)
+    db.session.commit()
+
+    kb_norm = bot._main_keyboard(user_normal)
+    btn_texts_norm = [b['text'] for row in kb_norm['keyboard'] for b in row]
+    assert BTN_STATUS in btn_texts_norm
+    assert BTN_TODAY in btn_texts_norm
+    assert BTN_HELP in btn_texts_norm
+    assert BTN_STATUS_FEMBOY not in btn_texts_norm
+
+    status_norm_text, _ = bot._build_status_page(user_normal)
+    assert RULE_ONE not in status_norm_text
+    assert 'ПЕРВОЕ ПРАВИЛО' not in status_norm_text
+    assert '<b>📊 Работы' in status_norm_text or 'Работ пока нет' in status_norm_text
+
+    prof_norm = bot._build_profile_text(user_normal)
+    assert '<b>⚙️ Профиль</b>' in prof_norm
+    assert '🎀 Профиль :з' not in prof_norm
+
+    # 19.2 Пользователь с включенной фембой-темой
+    user_fb = User(chat_id='888222', is_registered=True, is_active=True,
+                   theme_femboy=True, femboy_unlocked=True, state='ready',
+                   session_cookies='fake_sess')
+    db.session.add(user_fb)
+    db.session.commit()
+
+    kb_fb = bot._main_keyboard(user_fb)
+    btn_texts_fb = [b['text'] for row in kb_fb['keyboard'] for b in row]
+    assert BTN_STATUS_FEMBOY in btn_texts_fb
+    assert BTN_TODAY_FEMBOY in btn_texts_fb
+    assert BTN_HELP_FEMBOY in btn_texts_fb
+    assert BTN_STATUS not in btn_texts_fb
+
+    # Пустой статус с фембой-темой: первое правило сверху!
+    empty_fb_text, _ = bot._build_status_page(user_fb)
+    assert empty_fb_text.startswith(RULE_ONE), empty_fb_text
+    assert 'Заданьиц пока нет :3' in empty_fb_text
+
+    # Добавляем работы и проверяем статус с заданиями
+    w1 = WorkItem(user_id=user_fb.id, external_id='888001', discipline='Менеджмент',
+                  deadline='01.12.2026 12:00', status='Не отправлена', point_name='Кейс 1',
+                  points='0 из 10')
+    w2 = WorkItem(user_id=user_fb.id, external_id='888002', discipline='Маркетинг',
+                  deadline='02.12.2026 14:00', status='Отправлена', point_name='Презентация',
+                  points='5 из 5')
+    db.session.add_all([w1, w2])
+    db.session.commit()
+
+    status_fb_text, status_fb_kb = bot._build_status_page(user_fb)
+    # ПЕРВОЕ ПРАВИЛО строго первой строкой!
+    assert status_fb_text.startswith(RULE_ONE), status_fb_text
+    assert '<b>🐾 Лапки-заданьица' in status_fb_text
+    assert '🐾 Тема заданьица:' in status_fb_text
+    assert '⏳ Дедлайнчик:' in status_fb_text
+    assert '🎯 Балльчики:' in status_fb_text
+    assert 'Не сдано лапками :3' in status_fb_text
+    assert 'Сдано лапками :3' in status_fb_text
+
+    # Компактный статус: тоже первое правило сверху
+    compact_fb_text, _ = bot._build_status_compact(user_fb)
+    assert compact_fb_text.startswith(RULE_ONE), compact_fb_text
+    assert '🐾 Сводка заданьиц' in compact_fb_text
+    assert '🎀 Сдано лапками:' in compact_fb_text
+
+    # Профиль с фембой-темой
+    prof_fb = bot._build_profile_text(user_fb)
+    assert '<b>🎀 Профиль :з</b>' in prof_fb
+    assert 'лапки в тепле' in prof_fb
+    assert 'Академ. группка:' in prof_fb
+
+    prof_kb_fb = bot._profile_keyboard(user_fb)
+    prof_btn_texts = [b['text'] for row in prof_kb_fb['inline_keyboard'] for b in row]
+    assert any('Группка:' in t and ':3' in t for t in prof_btn_texts)
+    assert any('Расписаньице' in t for t in prof_btn_texts)
+
+    # Хелп с фембой-темой
+    help_fb = bot._help_text(user=user_fb)
+    assert '🐾 <b>Что я умею :3</b>' in help_fb
+    assert 'Расписаньице' in help_fb
+
+    # Расписание с фембой-темой
+    sched_fb = sched_mod.format_day_schedule(test_sched_day, 'МКТ-2531', is_femboy=True)
+    assert '<b>📅 Расписаньице — МКТ-2531 :3</b>' in sched_fb
+
+    sched_empty_fb = sched_mod.format_day_schedule(empty_day, 'МКТ-2531', is_femboy=True)
+    assert 'Парочек нет, можно отдыхать и мурчать! 🎉 :3' in sched_empty_fb
+
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

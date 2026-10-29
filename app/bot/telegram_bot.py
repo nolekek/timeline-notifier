@@ -73,13 +73,43 @@ BTN_SCHEDULE = '📅 Расписание'
 BTN_TODAY = '📋 На сегодня'
 BTN_HOROSCOPE = '🔮 Гороскоп'
 
-# NEW v2.1/v3.0: Фурри/фембой лейблы (R5)
+# NEW v2.1/v3.0/v3.2: Фурри/фембой лейблы (R5)
 BTN_STATUS_FEMBOY = '🐾 Статусик :3'
 BTN_OVERDUE_FEMBOY = '🐾 Хвостики-долги'
 BTN_CHECK_FEMBOY = '🐾 Потыкать лапкой'
 BTN_PROFILE_FEMBOY = '🎀 Профиль :з'
 BTN_SCHEDULE_FEMBOY = '📅 Расписаньице :3'
 BTN_HOROSCOPE_FEMBOY = '🐾 Гороскоп :3'
+BTN_TODAY_FEMBOY = '🐾 На сегодня :3'
+BTN_HELP_FEMBOY = '🐾 Хелп :3'
+
+HELP_TEXT_FEMBOY = (
+    "🐾 <b>Что я умею :3</b>\n"
+    "📅 Расписаньице — динамическое расписание пар УрГПУ (uspu.ru)\n"
+    "🐾 Статусик — все заданьица, темы, балльчики и дедлайнчики Timeline\n"
+    "🐾 Гороскоп — кавайный студенческий астропрогноз на каждый день :3\n"
+    "🐾 На сегодня — горящие дедлайнчики на сегодня и завтра\n"
+    "🐾 Хвостики-долги — неотправленные работы, требующие внимания лапок\n"
+    "🐾 Потыкать лапкой — зайти в Timeline прямо сейчас\n"
+    "🎀 Профиль :з — группка, логинчик, уведомлялочки и переключатели\n"
+    "🐾 Хелп :3 — эта милая справочка\n\n"
+    "Кнопочки — внизу экрана. Команды:\n"
+    "/schedule — расписаньице пар\n"
+    "/group МКТ-2531 — сменить учебную группку\n"
+    "/status — заданьица, балльчики и подробности\n"
+    "/task ID — подробная карточка заданьица по ID\n"
+    "/find слово — поиск заданьиц по теме и тексту\n"
+    "/horoscope — гороскопчик дня :3\n"
+    "/stats — общая статистика\n"
+    "/today — горящие заданьица (сегодня/завтра)\n"
+    "/feedback текст — написать создателю бота\n"
+    "/overdue — хвостики-долги\n"
+    "/check — проверить Timeline лапкой\n"
+    "/interval 15 — интервал проверок (мин)\n"
+    "/login — сменить логин/пароль ЭИОС\n"
+    "/unlink — удалить свои данные :(\n"
+    "/cancel — отмена ввода."
+)
 
 # --- список работ постранично ---
 STATUS_PAGE_SIZE = 4
@@ -89,6 +119,11 @@ SORT_DEADLINE = 'dl'    # по срокам: что горит — выше
 SORT_TITLES = {
     SORT_NEW: 'новые сверху, старьё в конце',
     SORT_DEADLINE: 'по срокам: сначала то, что горит',
+}
+
+SORT_TITLES_FEMBOY = {
+    SORT_NEW: 'сначала новенькие :3',
+    SORT_DEADLINE: 'по срокам: горящие дедлайнчики :3',
 }
 
 # Как выглядит название учебной группы
@@ -121,15 +156,15 @@ def _format_countdown(deadline_str: str) -> str:
     return f'🚨 {minutes} мин.'
 
 
-def _status_icon(status: str, is_overdue: bool) -> str:
+def _status_icon(status: str, is_overdue: bool, is_femboy: bool = False) -> str:
     """Эмодзи-иконка для статуса работы."""
     if is_overdue:
-        return '💀'
+        return '😿' if is_femboy else '💀'
     s = (status or '').lower()
-    if any(k in s for k in ('проверена', 'зачтена', 'отлично', 'хорошо', 'удовлетворит')):
-        return '✅'
+    if any(k in s for k in ('проверена', 'зачтена', 'отлично', 'хорошо', 'удовлетворит', 'принята')):
+        return '🎀' if is_femboy else '✅'
     if 'отправлена' in s and 'не ' not in s:
-        return '📬'
+        return '🐾' if is_femboy else '📬'
     if 'на провер' in s:
         return '🔍'
     return '⏳'
@@ -258,6 +293,8 @@ class TelegramBot:
             b_profile = BTN_PROFILE_FEMBOY
             b_schedule = BTN_SCHEDULE_FEMBOY
             b_horo = BTN_HOROSCOPE_FEMBOY
+            b_today = BTN_TODAY_FEMBOY
+            b_help = BTN_HELP_FEMBOY
             placeholder = 'Выбери лапкой :3'
         else:
             b_status = BTN_STATUS
@@ -266,6 +303,8 @@ class TelegramBot:
             b_profile = BTN_PROFILE
             b_schedule = BTN_SCHEDULE
             b_horo = BTN_HOROSCOPE
+            b_today = BTN_TODAY
+            b_help = BTN_HELP
             placeholder = 'Выбери пункт меню'
 
         return {
@@ -273,7 +312,7 @@ class TelegramBot:
                 [{'text': b_status}, {'text': b_overdue}],
                 [{'text': b_check}, {'text': b_profile}],
                 [{'text': b_schedule}, {'text': b_horo}],
-                [{'text': BTN_TODAY}, {'text': BTN_HELP}],
+                [{'text': b_today}, {'text': b_help}],
             ],
             'resize_keyboard': True,
             'is_persistent': True,
@@ -288,31 +327,50 @@ class TelegramBot:
         from app.bot.horoscope import ZODIAC_SIGNS
         sign_info = ZODIAC_SIGNS.get(zodiac_key) if zodiac_key else None
         sign_label = f"{sign_info['symbol']} {sign_info['name']}" if sign_info else 'не выбран'
+        is_femboy = bool(user and getattr(user, 'theme_femboy', False))
+
+        if is_femboy:
+            group_btn = f"👥 Группка: {group_lbl} :3"
+            relogin_btn = '🔑 Сменить логин/пароль ЭИОС'
+            notify_btn = ('🔕 Выключить уведомления :3' if user.notify_enabled
+                          else '🔔 Включить уведомления :3')
+            sched_btn = ('📅 Расписаньице на завтра: ВКЛ ✅ :3' if user.schedule_notify
+                         else '📅 Расписаньице на завтра: ВЫКЛ')
+            digest_btn = ('🌅 Дайджестик утром: ВКЛ ✅ :3' if user.digest_notify
+                          else '🌅 Дайджестик утром: ВЫКЛ')
+            horo_btn = (f'🐾 Гороскопчик в дайджесте: ВКЛ ({sign_label}) ✅' if horo_notify
+                        else '🐾 Гороскопчик в дайджесте: ВЫКЛ')
+            unlink_btn = '🗑 Удалить мои данные :('
+        else:
+            group_btn = f"👥 Группа: {group_lbl}"
+            relogin_btn = '🔑 Сменить логин/пароль ЭИОС'
+            notify_btn = ('🔕 Выключить уведомления' if user.notify_enabled
+                          else '🔔 Включить уведомления')
+            sched_btn = ('📅 Расписание на завтра: ВКЛ ✅' if user.schedule_notify
+                         else '📅 Расписание на завтра: ВЫКЛ')
+            digest_btn = ('🌅 Дайджест утром: ВКЛ ✅' if user.digest_notify
+                          else '🌅 Дайджест утром: ВЫКЛ')
+            horo_btn = (f'🔮 Гороскоп в дайджесте: ВКЛ ({sign_label}) ✅' if horo_notify
+                        else '🔮 Гороскоп в дайджесте: ВЫКЛ')
+            unlink_btn = '🗑 Удалить мои данные'
 
         rows = [
-            [{'text': f"👥 Группа: {group_lbl}", 'callback_data': 'change_group'}],
-            [{'text': '🔑 Сменить логин/пароль ЭИОС', 'callback_data': 'relogin'}],
-            [{'text': ('🔕 Выключить уведомления' if user.notify_enabled
-                       else '🔔 Включить уведомления'),
-              'callback_data': 'toggle_notify'}],
-            [{'text': ('📅 Расписание на завтра: ВКЛ ✅' if user.schedule_notify
-                       else '📅 Расписание на завтра: ВЫКЛ'),
-              'callback_data': 'toggle_schedule_notify'}],
-            [{'text': ('🌅 Дайджест утром: ВКЛ ✅' if user.digest_notify
-                       else '🌅 Дайджест утром: ВЫКЛ'),
-              'callback_data': 'toggle_digest_notify'}],
-            [{'text': (f'🔮 Гороскоп в дайджесте: ВКЛ ({sign_label}) ✅' if horo_notify
-                       else '🔮 Гороскоп в дайджесте: ВЫКЛ'),
-              'callback_data': 'toggle_horoscope_notify'}],
+            [{'text': group_btn, 'callback_data': 'change_group'}],
+            [{'text': relogin_btn, 'callback_data': 'relogin'}],
+            [{'text': notify_btn, 'callback_data': 'toggle_notify'}],
+            [{'text': sched_btn, 'callback_data': 'toggle_schedule_notify'}],
+            [{'text': digest_btn, 'callback_data': 'toggle_digest_notify'}],
+            [{'text': horo_btn, 'callback_data': 'toggle_horoscope_notify'}],
         ]
         if horo_notify:
-            rows.append([{'text': f"♈ Сменить знак: {sign_label}", 'callback_data': 'horo_pick_sign'}])
+            change_sign_btn = f"🐾 Сменить знак: {sign_label} :3" if is_femboy else f"♈ Сменить знак: {sign_label}"
+            rows.append([{'text': change_sign_btn, 'callback_data': 'horo_pick_sign'}])
 
         if getattr(user, 'femboy_unlocked', False):
             is_active = getattr(user, 'theme_femboy', False)
             btn_txt = '🐾 Тема: ВКЛ :3' if is_active else '🐾 Тема: ВЫКЛ'
             rows.append([{'text': btn_txt, 'callback_data': 'toggle_theme_femboy'}])
-        rows.append([{'text': '🗑 Удалить мои данные', 'callback_data': 'unlink'}])
+        rows.append([{'text': unlink_btn, 'callback_data': 'unlink'}])
         return {'inline_keyboard': rows}
 
     @staticmethod
@@ -350,17 +408,17 @@ class TelegramBot:
         return {'inline_keyboard': rows}
 
     @staticmethod
-    def _schedule_keyboard(group_name: str, mode: str = 'today', offset_weeks: int = 0) -> dict:
+    def _schedule_keyboard(group_name: str, mode: str = 'today', offset_weeks: int = 0, is_femboy: bool = False) -> dict:
         btn_today = {
-            'text': '• Сегодня •' if mode == 'today' and offset_weeks == 0 else '📍 Сегодня',
+            'text': '• Сегодня •' if mode == 'today' and offset_weeks == 0 else ('📍 Сегодня :3' if is_femboy else '📍 Сегодня'),
             'callback_data': 'sch|today|0'
         }
         btn_tomorrow = {
-            'text': '• Завтра •' if mode == 'tomorrow' else '⏩ Завтра',
+            'text': '• Завтра •' if mode == 'tomorrow' else ('⏩ Завтра :3' if is_femboy else '⏩ Завтра'),
             'callback_data': 'sch|tomorrow|0'
         }
         btn_week = {
-            'text': '• Вся неделя •' if mode == 'week' and offset_weeks == 0 else '📆 Вся неделя',
+            'text': '• Вся неделя •' if mode == 'week' and offset_weeks == 0 else ('📆 Вся неделька :3' if is_femboy else '📆 Вся неделя'),
             'callback_data': 'sch|week|0'
         }
 
@@ -368,24 +426,25 @@ class TelegramBot:
         next_offset = offset_weeks + 1
 
         if mode == 'week':
-            week_label = 'Текущая нед.' if offset_weeks == 0 else f'Неделя {offset_weeks:+d}'
+            week_label = ('Текущая неделька :3' if is_femboy else 'Текущая нед.') if offset_weeks == 0 else f'Неделя {offset_weeks:+d}'
             nav_row = [
-                {'text': '◀ Пред. неделя', 'callback_data': f'sch|week|{prev_offset}'},
+                {'text': '◀ Пред. нед.' if is_femboy else '◀ Пред. неделя', 'callback_data': f'sch|week|{prev_offset}'},
                 {'text': f'• {week_label} •', 'callback_data': f'sch|week|{offset_weeks}'},
-                {'text': 'След. неделя ▶', 'callback_data': f'sch|week|{next_offset}'},
+                {'text': 'След. нед. ▶' if is_femboy else 'След. неделя ▶', 'callback_data': f'sch|week|{next_offset}'},
             ]
         else:
             nav_row = [
-                {'text': '◀ Пред. неделя', 'callback_data': 'sch|week|-1'},
-                {'text': '🔄 Обновить', 'callback_data': f'sch|refresh|{offset_weeks}'},
-                {'text': 'След. неделя ▶', 'callback_data': 'sch|week|1'},
+                {'text': '◀ Пред. нед.' if is_femboy else '◀ Пред. неделя', 'callback_data': 'sch|week|-1'},
+                {'text': '🐾 Обновить' if is_femboy else '🔄 Обновить', 'callback_data': f'sch|refresh|{offset_weeks}'},
+                {'text': 'След. нед. ▶' if is_femboy else 'След. неделя ▶', 'callback_data': 'sch|week|1'},
             ]
 
+        grp_label = f'👥 Группка: {group_name} :3' if is_femboy else f'👥 Группа: {group_name}'
         return {
             'inline_keyboard': [
                 [btn_today, btn_tomorrow, btn_week],
                 nav_row,
-                [{'text': f'👥 Группа: {group_name}', 'callback_data': 'change_group'}],
+                [{'text': grp_label, 'callback_data': 'change_group'}],
             ]
         }
 
@@ -593,7 +652,9 @@ class TelegramBot:
                           reply_markup=self._main_keyboard(user))
 
     def _help_text(self, user=None) -> str:
-        return HELP_TEXT + "\n\n" + joke_html('help', user=user)
+        is_femboy = bool(user and getattr(user, 'theme_femboy', False))
+        text = HELP_TEXT_FEMBOY if is_femboy else HELP_TEXT
+        return text + "\n\n" + joke_html('help', user=user)
 
     # ------------------------------------------------------------ расписание
 
@@ -602,15 +663,18 @@ class TelegramBot:
                       offset_weeks: int = 0):
         from app.parser.schedule import get_schedule_view
         group = getattr(user, 'current_group', 'МКТ-2531')
+        is_femboy = bool(user and getattr(user, 'theme_femboy', False))
         try:
             text = get_schedule_view(group, mode=mode, force_refresh=force_refresh,
-                                     offset_weeks=offset_weeks)
+                                     offset_weeks=offset_weeks, is_femboy=is_femboy)
         except Exception as e:
             logger.error(f"Ошибка загрузки расписания: {e}")
-            text = (f"⚠️ Не удалось загрузить расписание для группы <b>{html.escape(group)}</b>.\n"
-                    f"Причина: <code>{html.escape(str(e))}</code>")
+            err_title = (f"⚠️ Не удалось загрузить расписаньице для группки <b>{html.escape(group)}</b> :3\n"
+                         if is_femboy else
+                         f"⚠️ Не удалось загрузить расписание для группы <b>{html.escape(group)}</b>.\n")
+            text = (err_title + f"Причина: <code>{html.escape(str(e))}</code>")
 
-        keyboard = self._schedule_keyboard(group, mode=mode, offset_weeks=offset_weeks)
+        keyboard = self._schedule_keyboard(group, mode=mode, offset_weeks=offset_weeks, is_femboy=is_femboy)
         if message_id:
             if not self.edit_message(chat_id, message_id, text, keyboard):
                 # Если edit_message не смог изменить (например, удалено пользователем)
@@ -720,10 +784,15 @@ class TelegramBot:
         rows.append(nav)
 
         other = SORT_DEADLINE if sort == SORT_NEW else SORT_NEW
-        toggle = ('⏰ По срокам' if sort == SORT_NEW else '🆕 Новые сверху')
+        if is_femboy:
+            toggle = ('⏰ Дедлайнчики' if sort == SORT_NEW else '🆕 Новенькие :3')
+            compact_btn = '🔽 Компактно :3'
+        else:
+            toggle = ('⏰ По срокам' if sort == SORT_NEW else '🆕 Новые сверху')
+            compact_btn = '🔽 Компактно'
         rows.append([
             {'text': toggle, 'callback_data': f'st|{other}|1'},
-            {'text': '🔽 Компактно', 'callback_data': 'st_compact'},
+            {'text': compact_btn, 'callback_data': 'st_compact'},
         ])
         return {'inline_keyboard': rows}
 
@@ -738,13 +807,20 @@ class TelegramBot:
         items = self._status_items(user, sort)
         streak = getattr(user, 'fail_streak', 0) or 0
         show_error = bool(user.last_error and streak >= 3)
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
+        sort_titles = SORT_TITLES_FEMBOY if is_femboy else SORT_TITLES
 
         if not items:
-            empty_lines = [
-                "<i>Работ пока нет. Нажми «🔄 Проверить».</i>",
-                "Если это повторяется — проверь логин/пароль: /login",
-                ""
-            ]
+            empty_lines = []
+            if is_femboy:
+                empty_lines.append("<code>ПЕРВОЕ ПРАВИЛО ФЕМБОЙ ТЕМЫ — НИКОМУ НЕ ГОВОРИТЬ О ФЕМБОЙ ТЕМЕ</code>\n")
+                empty_lines.append("<i>Заданьиц пока нет :3 Нажми «🐾 Потыкать лапкой».</i>")
+                empty_lines.append("Если это повторяется — проверь логин/пароль: /login")
+                empty_lines.append("")
+            else:
+                empty_lines.append("<i>Работ пока нет. Нажми «🔄 Проверить».</i>")
+                empty_lines.append("Если это повторяется — проверь логин/пароль: /login")
+                empty_lines.append("")
             if show_error:
                 diag = format_diagnostic_block('TimelineScraper', user.last_error, f"{streak}/3")
                 empty_lines.append(f"⚠️ Последняя проверка не удалась: <code>{html.escape(user.last_error)}</code>")
@@ -759,27 +835,48 @@ class TelegramBot:
         start = (page - 1) * STATUS_PAGE_SIZE
         chunk = items[start:start + STATUS_PAGE_SIZE]
 
-        lines = [f"<b>📊 Работы — стр. {page}/{pages}</b>  <i>(всего {len(items)}, "
-                 f"{SORT_TITLES.get(sort, '')})</i>",
-                 f"<code>{self._silly_bar(page, pages)}</code>", ""]
+        lines = []
+        if is_femboy:
+            lines.append("<code>ПЕРВОЕ ПРАВИЛО ФЕМБОЙ ТЕМЫ — НИКОМУ НЕ ГОВОРИТЬ О ФЕМБОЙ ТЕМЕ</code>\n")
+            lines.append(f"<b>🐾 Лапки-заданьица — стр. {page}/{pages}</b>  <i>(всего {len(items)}, "
+                         f"{sort_titles.get(sort, '')})</i>")
+        else:
+            lines.append(f"<b>📊 Работы — стр. {page}/{pages}</b>  <i>(всего {len(items)}, "
+                         f"{sort_titles.get(sort, '')})</i>")
+        lines.append(f"<code>{self._silly_bar(page, pages)}</code>")
+        lines.append("")
 
         for offset, it in enumerate(chunk):
             e = _enrich(it)
-            icon = _status_icon(e['status'], e['is_overdue'])
+            icon = _status_icon(e['status'], e['is_overdue'], is_femboy=is_femboy)
             lines.append(f"{icon} <b>{start + offset + 1}. {html.escape(e['discipline'])}</b>")
             if e.get('point_name'):
-                lines.append(f"   📌 Тема: {html.escape(e['point_name'])}")
+                topic_lbl = "🐾 Тема заданьица:" if is_femboy else "📌 Тема:"
+                lines.append(f"   {topic_lbl} {html.escape(e['point_name'])}")
             if e['deadline']:
                 countdown = _format_countdown(e['deadline'])
-                lines.append(f"   ⏳ Срок: {e['deadline']}" + (f'  ({countdown})' if countdown else ''))
+                dl_lbl = "⏳ Дедлайнчик:" if is_femboy else "⏳ Срок:"
+                lines.append(f"   {dl_lbl} {e['deadline']}" + (f'  ({countdown})' if countdown else ''))
             detected_files = extract_file_attachments(f"{e.get('control_text', '')} {e.get('teacher_note', '')}")
             if detected_files:
                 file_badge = ", ".join(f"<code>{html.escape(f)}</code>" for f in detected_files[:2])
-                lines.append(f"   📁 Файл: {file_badge}")
+                files_lbl = "🐾 Файлики:" if is_femboy else "📁 Файл:"
+                lines.append(f"   {files_lbl} {file_badge}")
+
+            status_val = e['status']
+            if is_femboy:
+                if status_val in ('', 'Не отправлена'):
+                    status_val = 'Не сдано лапками :3'
+                elif 'отправлена' in status_val.lower():
+                    status_val = 'Сдано лапками :3'
+                elif any(k in status_val.lower() for k in ('зачтена', 'проверена', 'принята')):
+                    status_val = 'Зачтено :3'
+
             if e.get('points'):
-                lines.append(f"   🎯 Баллы: {html.escape(e['points'])} | Статус: {e['status']}")
+                pts_lbl = "🎯 Балльчики:" if is_femboy else "🎯 Баллы:"
+                lines.append(f"   {pts_lbl} {html.escape(e['points'])} | Статус: {status_val}")
             else:
-                lines.append(f"   Статус: {e['status']}")
+                lines.append(f"   Статус: {status_val}")
             lines.append("")
 
         if show_error:
@@ -826,7 +923,7 @@ class TelegramBot:
             return err_text, kb
 
         e = _enrich(item)
-        icon = _status_icon(e['status'], e['is_overdue'])
+        icon = _status_icon(e['status'], e['is_overdue'], is_femboy=is_femboy)
         countdown = _format_countdown(e['deadline']) if e.get('deadline') else ''
 
         lines = [
@@ -843,10 +940,22 @@ class TelegramBot:
             cd_str = f" <i>({countdown})</i>" if countdown else ""
             lines.append(f"{dl_label} {e['deadline']}{cd_str}")
 
-        lines.append(f"📊 <b>Статус:</b> {e['status']}")
+        status_text = e['status']
+        if is_femboy:
+            if status_text in ('', 'Не отправлена'):
+                status_text = 'Не сдано лапками :3'
+            elif 'отправлена' in status_text.lower():
+                status_text = 'Сдано лапками :3'
+            elif any(k in status_text.lower() for k in ('зачтена', 'проверена', 'принята')):
+                status_text = 'Зачтено :3'
+            status_label = "🐾 <b>Статусик:</b>"
+        else:
+            status_label = "📊 <b>Статус:</b>"
+        lines.append(f"{status_label} {status_text}")
 
         if e.get('points'):
-            lines.append(f"🎯 <b>Баллы:</b> <code>{html.escape(e['points'])}</code>")
+            pts_label = "🎯 <b>Баллы:</b>" if not is_femboy else "🎯 <b>Балльчики:</b>"
+            lines.append(f"{pts_label} <code>{html.escape(e['points'])}</code>")
 
         control_text = e.get('control_text') or ''
         teacher_note = e.get('teacher_note') or ''
@@ -927,9 +1036,13 @@ class TelegramBot:
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
 
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
         items = WorkItem.query.filter_by(user_id=user.id).all()
         if not items:
-            return ("<i>Работ пока нет. Нажми «🔄 Проверить».</i>", None)
+            empty_compact = ("<code>ПЕРВОЕ ПРАВИЛО ФЕМБОЙ ТЕМЫ — НИКОМУ НЕ ГОВОРИТЬ О ФЕМБОЙ ТЕМЕ</code>\n\n<i>Заданьиц пока нет :3 Нажми «🐾 Потыкать лапкой».</i>"
+                             if is_femboy else
+                             "<i>Работ пока нет. Нажми «🔄 Проверить».</i>")
+            return (empty_compact, None)
 
         enriched = [_enrich(it) for it in items]
         total = len(enriched)
@@ -937,21 +1050,39 @@ class TelegramBot:
         sent_cnt = sum(1 for e in enriched if e['status'] not in ('', 'Не отправлена'))
         pending_cnt = total - sent_cnt - overdue_cnt
 
-        lines = [
-            "<b>📊 Сводка работ (компактный вид)</b>",
-            "",
-            f"Всего: <b>{total}</b>",
-            f"✅ Сдано: <b>{sent_cnt}</b>",
-            f"⏳ В процессе: <b>{max(0, pending_cnt)}</b>",
-            f"💀 Просрочено: <b>{overdue_cnt}</b>",
-            "",
-            joke_html('status', 0, user=user)
-        ]
-        keyboard = {
-            'inline_keyboard': [
-                [{'text': '📄 Подробный список', 'callback_data': 'st|new|1'}],
+        if is_femboy:
+            lines = [
+                "<code>ПЕРВОЕ ПРАВИЛО ФЕМБОЙ ТЕМЫ — НИКОМУ НЕ ГОВОРИТЬ О ФЕМБОЙ ТЕМЕ</code>\n",
+                "<b>🐾 Сводка заданьиц (компактный вид) :3</b>",
+                "",
+                f"Всего заданьиц: <b>{total}</b>",
+                f"🎀 Сдано лапками: <b>{sent_cnt}</b>",
+                f"⏳ В процессе: <b>{max(0, pending_cnt)}</b>",
+                f"😿 Просрочено (хвостики): <b>{overdue_cnt}</b>",
+                "",
+                joke_html('status', 0, user=user)
             ]
-        }
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '📄 Подробный список :3', 'callback_data': 'st|new|1'}],
+                ]
+            }
+        else:
+            lines = [
+                "<b>📊 Сводка работ (компактный вид)</b>",
+                "",
+                f"Всего: <b>{total}</b>",
+                f"✅ Сдано: <b>{sent_cnt}</b>",
+                f"⏳ В процессе: <b>{max(0, pending_cnt)}</b>",
+                f"💀 Просрочено: <b>{overdue_cnt}</b>",
+                "",
+                joke_html('status', 0, user=user)
+            ]
+            keyboard = {
+                'inline_keyboard': [
+                    [{'text': '📄 Подробный список', 'callback_data': 'st|new|1'}],
+                ]
+            }
         return "\n".join(lines), keyboard
 
     def _build_status_text(self, user) -> str:
@@ -999,14 +1130,19 @@ class TelegramBot:
 
             overdue.append(e)
 
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
         if not overdue:
-            return ("<i>Просроченных неотправленных работ нет. Отличная работа! 👍</i>\n\n"
-                    + joke_html('overdue_clean', user=user))
+            clean_msg = ("<i>Хвостиков-долгов нет! Лапки чистые, можно отдыхать! 🎉 :3</i>\n\n"
+                         if is_femboy else
+                         "<i>Просроченных неотправленных работ нет. Отличная работа! 👍</i>\n\n")
+            return clean_msg + joke_html('overdue_clean', user=user)
 
-        lines = [f"<b>💀 Просроченные работы ({len(overdue)}):</b>\n"]
+        hdr = f"<b>🐾 Пушистые хвостики-долги ({len(overdue)}) :3:</b>\n" if is_femboy else f"<b>💀 Просроченные работы ({len(overdue)}):</b>\n"
+        lines = [hdr]
         for e in overdue:
             lines.append(f"• <b>{html.escape(e['discipline'])}</b>")
-            lines.append(f"  Срок: {e['deadline']}")
+            dl_lbl = "Дедлайнчик:" if is_femboy else "Срок:"
+            lines.append(f"  {dl_lbl} {e['deadline']}")
             lines.append("")
         lines.append(joke_html('overdue', user=user))
         return "\n".join(lines)
@@ -1057,18 +1193,40 @@ class TelegramBot:
                              f"{diag}\n"
                              f"{joke_html('apology', user=user)}\n")
 
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
+        if is_femboy:
+            hdr = "<b>🎀 Профиль :з</b>\n"
+            pwd_txt = 'зашифрован и спрятан в лапках :3' if user.password_enc else '—'
+            sess_txt = 'лапки в тепле (активна) :3' if user.session_cookies else 'лапки замёрзли (не создана)'
+            notif_txt = 'включены :3' if user.notify_enabled else 'выключены'
+            last_check_lbl = 'Последний тык лапкой:'
+            sched_lbl = 'Расписаньице на завтра:'
+            digest_lbl = 'Дайджестик утром:'
+            horo_lbl = 'Гороскопчик в дайджесте:'
+            group_lbl = 'Академ. группка:'
+        else:
+            hdr = "<b>⚙️ Профиль</b>\n"
+            pwd_txt = 'зашифрован и сохранён' if user.password_enc else '—'
+            sess_txt = 'активна' if user.session_cookies else 'не создана'
+            notif_txt = 'включены' if user.notify_enabled else 'выключены'
+            last_check_lbl = 'Последняя проверка:'
+            sched_lbl = 'Расписание на завтра:'
+            digest_lbl = 'Дайджест утром:'
+            horo_lbl = 'Гороскоп в дайджесте:'
+            group_lbl = 'Академ. группа:'
+
         return (
-            "<b>⚙️ Профиль</b>\n"
-            f"Академ. группа: <code>{html.escape(group)}</code> (/group)\n"
+            hdr
+            + f"{group_lbl} <code>{html.escape(group)}</code> (/group)\n"
             f"Логин ЭИОС: <code>{html.escape(user.timeline_login or '—')}</code>\n"
-            f"Пароль: {'зашифрован и сохранён' if user.password_enc else '—'}\n"
-            f"Сессия: {'активна' if user.session_cookies else 'не создана'}\n"
-            f"Уведомления: {'включены' if user.notify_enabled else 'выключены'}\n"
-            f"Расписание на завтра: {schedule_notify_str}\n"
-            f"Дайджест утром: {digest_notify_str}\n"
-            f"Гороскоп в дайджесте: {horo_notify_str}\n"
+            f"Пароль: {pwd_txt}\n"
+            f"Сессия: {sess_txt}\n"
+            f"Уведомления: {notif_txt}\n"
+            f"{sched_lbl} {schedule_notify_str}\n"
+            f"{digest_lbl} {digest_notify_str}\n"
+            f"{horo_lbl} {horo_notify_str}\n"
             f"Интервал проверки: {interval // 60} мин\n"
-            f"Последняя проверка: "
+            f"{last_check_lbl} "
             f"{user.last_check_at.strftime('%d.%m.%Y %H:%M') if user.last_check_at else '—'}\n"
             + error_section
             + "\n" + joke_html('profile', user=user)
@@ -1543,7 +1701,7 @@ class TelegramBot:
             db.session.commit()
             self.send_message(chat_id, "Отменено.")
             return
-        if low in ('/help', 'help', 'помощь') or norm == 'помощь' or text == BTN_HELP or 'помощь' in low:
+        if low in ('/help', 'help', 'помощь', 'хелп') or norm in ('помощь', 'хелп') or text in (BTN_HELP, BTN_HELP_FEMBOY) or 'помощь' in low or 'хелп' in low:
             self.send_message(chat_id, self._help_text(user=user),
                               reply_markup=self._main_keyboard(user) if user.is_registered else None)
             return
@@ -1561,14 +1719,14 @@ class TelegramBot:
 
         # --- Расписание доступно для любого пользователя ---
         if (low.startswith(('/schedule', '/rasp', '/расписание'))
-                or norm in ('расписание', 'расписаньице', 'пары')
-                or text == BTN_SCHEDULE_FEMBOY):
+                or norm in ('расписание', 'расписаньице', 'пары', 'парочки')
+                or text in (BTN_SCHEDULE, BTN_SCHEDULE_FEMBOY)):
             self._cmd_schedule(user, chat_id, mode='today')
             return
 
         # --- Гороскоп доступен для любого пользователя ---
         if (low.startswith(('/horoscope', '/horo', '/гороскоп'))
-                or norm in ('гороскоп', 'гороскоп з')
+                or norm in ('гороскоп', 'гороскопчик', 'гороскоп з', 'гороскоп :3')
                 or text in (BTN_HOROSCOPE, BTN_HOROSCOPE_FEMBOY)):
             self._cmd_horoscope(user, chat_id)
             return
@@ -1654,12 +1812,12 @@ class TelegramBot:
         # --- меню и действия зарегистрированного пользователя ---
         if low.startswith('/menu') or norm == 'меню':
             self._menu(chat_id, user=user)
-        elif low.startswith('/status') or norm == 'статус' or text == BTN_STATUS_FEMBOY:
+        elif low.startswith('/status') or norm in ('статус', 'статусик', 'статусик :3') or text in (BTN_STATUS, BTN_STATUS_FEMBOY):
             text, keyboard = self._build_status_page(user)
             self.send_message(chat_id, text, reply_markup=keyboard)
-        elif low.startswith('/stats') or norm == 'статистика':
+        elif low.startswith('/stats') or norm in ('статистика', 'статистика :3'):
             self._cmd_stats(user, chat_id)
-        elif low.startswith('/today') or norm == 'на сегодня' or text == BTN_TODAY:
+        elif low.startswith('/today') or norm in ('на сегодня', 'сегодня', 'на сегодня :3') or text in (BTN_TODAY, BTN_TODAY_FEMBOY):
             self._cmd_today(user, chat_id)
         elif low.startswith('/find') or norm.startswith('поиск'):
             parts = text.split(maxsplit=1)
@@ -1670,12 +1828,12 @@ class TelegramBot:
             msg_text = parts[1].strip() if len(parts) > 1 else ''
             self._cmd_feedback(user, chat_id, msg_text)
         elif (low.startswith('/overdue')
-              or norm in ('просрочки', 'просроченные', 'хвостики-долги', 'долги')
-              or text == BTN_OVERDUE_FEMBOY):
+              or norm in ('просрочки', 'просроченные', 'хвостики-долги', 'хвостики', 'долги')
+              or text in (BTN_OVERDUE, BTN_OVERDUE_FEMBOY)):
             self.send_message(chat_id, self._build_overdue_text(user))
-        elif low.startswith('/check') or norm in ('проверить', 'потыкать лапкой') or text == BTN_CHECK_FEMBOY:
+        elif low.startswith('/check') or norm in ('проверить', 'потыкать лапкой') or text in (BTN_CHECK, BTN_CHECK_FEMBOY):
             self._run_check_async(user.id, chat_id)
-        elif low.startswith('/profile') or norm in ('профиль', 'профиль з') or text == BTN_PROFILE_FEMBOY:
+        elif low.startswith('/profile') or norm in ('профиль', 'профиль з', 'профиль :з') or text in (BTN_PROFILE, BTN_PROFILE_FEMBOY):
             self.send_message(chat_id, self._build_profile_text(user),
                               reply_markup=self._profile_keyboard(user))
         elif low.startswith('/last') or norm == 'последняя проверка':
@@ -1701,9 +1859,10 @@ class TelegramBot:
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
 
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
         items = WorkItem.query.filter_by(user_id=user.id).all()
         if not items:
-            self.send_message(chat_id, '<i>Работ пока нет. Нажми «🔄 Проверить».</i>')
+            self.send_message(chat_id, '<i>Заданьиц пока нет :3 Нажми «🐾 Потыкать лапкой».</i>' if is_femboy else '<i>Работ пока нет. Нажми «🔄 Проверить».</i>')
             return
 
         enriched = [_enrich(it) for it in items]
@@ -1733,26 +1892,45 @@ class TelegramBot:
                 nearest_dt = dt
                 nearest = it
 
-        lines = [
-            '<b>📊 Статистика работ</b>',
-            '',
-            f'Всего работ: <b>{total}</b>',
-            f'✅ Сдано/проверено: <b>{len(sent)}</b>',
-            f'⏳ Ожидает отправки: <b>{len(pending)}</b>',
-            f'💀 Просрочено: <b>{len(overdue_list)}</b>',
-            f'🔴 Горит (≤48 ч.): <b>{len(burning)}</b>',
-        ]
-
-        if nearest:
-            countdown = _format_countdown(nearest.deadline)
-            lines += [
+        if is_femboy:
+            lines = [
+                '<b>🐾 Статистика заданьиц :3</b>',
                 '',
-                '⏰ Ближайший дедлайн:',
-                f'<b>{html.escape(nearest.discipline)}</b>',
-                f'Срок: {nearest.deadline}  {countdown}',
+                f'Всего заданьиц: <b>{total}</b>',
+                f'🎀 Сдано лапками: <b>{len(sent)}</b>',
+                f'⏳ Ожидает отправки: <b>{len(pending)}</b>',
+                f'😿 Просрочено (хвостики): <b>{len(overdue_list)}</b>',
+                f'🚨 Горит (≤48 ч.): <b>{len(burning)}</b>',
             ]
+            if nearest:
+                countdown = _format_countdown(nearest.deadline)
+                lines += [
+                    '',
+                    '⏰ Ближайший дедлайнчик:',
+                    f'<b>{html.escape(nearest.discipline)}</b>',
+                    f'Дедлайнчик: {nearest.deadline}  {countdown}',
+                ]
+            lines += ['', f'👥 Группка: <code>{html.escape(user.current_group)}</code> :3']
+        else:
+            lines = [
+                '<b>📊 Статистика работ</b>',
+                '',
+                f'Всего работ: <b>{total}</b>',
+                f'✅ Сдано/проверено: <b>{len(sent)}</b>',
+                f'⏳ Ожидает отправки: <b>{len(pending)}</b>',
+                f'💀 Просрочено: <b>{len(overdue_list)}</b>',
+                f'🔴 Горит (≤48 ч.): <b>{len(burning)}</b>',
+            ]
+            if nearest:
+                countdown = _format_countdown(nearest.deadline)
+                lines += [
+                    '',
+                    '⏰ Ближайший дедлайн:',
+                    f'<b>{html.escape(nearest.discipline)}</b>',
+                    f'Срок: {nearest.deadline}  {countdown}',
+                ]
+            lines += ['', f'👥 Группа: <code>{html.escape(user.current_group)}</code>']
 
-        lines += ['', f'👥 Группа: <code>{html.escape(user.current_group)}</code>']
         self.send_message(chat_id, '\n'.join(lines))
 
     def _cmd_today(self, user, chat_id: str):
@@ -1779,19 +1957,28 @@ class TelegramBot:
 
         urgent.sort(key=lambda x: x[0])
 
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
         if not urgent:
-            self.send_message(chat_id, '✅ <b>Горящих дедлайнов нет!</b>\n\n'
-                              '<i>Работ на сегодня и завтра нет — можно выдохнуть.</i>\n\n'
-                              + joke_html('overdue_clean'))
+            no_urg_text = ('✅ <b>Горящих дедлайнчиков нет! :3</b>\n\n'
+                           '<i>Заданьиц на сегодня и завтра нет — можно помурчать и отдохнуть uwu</i>\n\n'
+                           if is_femboy else
+                           '✅ <b>Горящих дедлайнов нет!</b>\n\n'
+                           '<i>Работ на сегодня и завтра нет — можно выдохнуть.</i>\n\n')
+            self.send_message(chat_id, no_urg_text + joke_html('overdue_clean', user=user))
             return
 
-        lines = [f'<b>📋 Дедлайны сегодня и завтра ({len(urgent)}):</b>', '']
+        hdr = f'<b>🐾 Горящие дедлайнчики сегодня и завтра ({len(urgent)}) :3:</b>' if is_femboy else f'<b>📋 Дедлайны сегодня и завтра ({len(urgent)}):</b>'
+        lines = [hdr, '']
         for dt, it in urgent:
             countdown = _format_countdown(it.deadline)
             overdue = dt < now
-            icon = '💀' if overdue else ('🚨' if (dt - now).total_seconds() < 12 * 3600 else '🔴')
+            if is_femboy:
+                icon = '😿' if overdue else ('🚨' if (dt - now).total_seconds() < 12 * 3600 else '🐾')
+            else:
+                icon = '💀' if overdue else ('🚨' if (dt - now).total_seconds() < 12 * 3600 else '🔴')
             lines.append(f'{icon} <b>{html.escape(it.discipline)}</b>')
-            lines.append(f'   Срок: {it.deadline}  {countdown}')
+            dl_lbl = 'Дедлайнчик:' if is_femboy else 'Срок:'
+            lines.append(f'   {dl_lbl} {it.deadline}  {countdown}')
             lines.append('')
 
         self.send_message(chat_id, '\n'.join(lines))
@@ -1815,8 +2002,12 @@ class TelegramBot:
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
 
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
         if not query:
-            self.send_message(chat_id, "ℹ️ Напиши поисковый запрос, например:\n<code>/find история</code> или <code>/find матем</code>")
+            hint = ("ℹ️ Напиши поисковый запрос лапками :3 Например:\n<code>/find история</code> или <code>/find матем</code>"
+                    if is_femboy else
+                    "ℹ️ Напиши поисковый запрос, например:\n<code>/find история</code> или <code>/find матем</code>")
+            self.send_message(chat_id, hint)
             return
 
         q_lower = query.lower()
@@ -1829,27 +2020,42 @@ class TelegramBot:
             if q_lower in disc or q_lower in pname or q_lower in ctrl:
                 matched.append(it)
 
-        is_femboy = bool(getattr(user, 'theme_femboy', False))
-
         if not matched:
-            self.send_message(chat_id, f"🔍 По запросу «<b>{html.escape(query)}</b>» ничего не найдено.")
+            not_found = (f"😿 По запросу «<b>{html.escape(query)}</b>» лапки ничего не нашли :3"
+                         if is_femboy else
+                         f"🔍 По запросу «<b>{html.escape(query)}</b>» ничего не найдено.")
+            self.send_message(chat_id, not_found)
             return
 
-        lines = [f"🔍 <b>Результаты поиска ({len(matched)}):</b>\n"]
+        hdr_find = f"🐾 <b>Найдено лапками ({len(matched)}) :3:</b>\n" if is_femboy else f"🔍 <b>Результаты поиска ({len(matched)}):</b>\n"
+        lines = [hdr_find]
         action_row = []
         for idx, it in enumerate(matched[:10], start=1):
             e = _enrich(it)
-            icon = _status_icon(e['status'], e['is_overdue'])
+            icon = _status_icon(e['status'], e['is_overdue'], is_femboy=is_femboy)
             countdown = _format_countdown(e['deadline']) if e.get('deadline') else ''
             lines.append(f"{icon} <b>{idx}. {html.escape(e['discipline'])}</b>")
             if e.get('point_name'):
-                lines.append(f"   📌 Тема: {html.escape(e['point_name'])}")
+                topic_lbl = "🐾 Тема заданьица:" if is_femboy else "📌 Тема:"
+                lines.append(f"   {topic_lbl} {html.escape(e['point_name'])}")
             if e['deadline']:
-                lines.append(f"   ⏳ Срок: {e['deadline']}" + (f"  ({countdown})" if countdown else ""))
+                dl_lbl = "⏳ Дедлайнчик:" if is_femboy else "⏳ Срок:"
+                lines.append(f"   {dl_lbl} {e['deadline']}" + (f"  ({countdown})" if countdown else ""))
+
+            status_val = e['status']
+            if is_femboy:
+                if status_val in ('', 'Не отправлена'):
+                    status_val = 'Не сдано лапками :3'
+                elif 'отправлена' in status_val.lower():
+                    status_val = 'Сдано лапками :3'
+                elif any(k in status_val.lower() for k in ('зачтена', 'проверена', 'принята')):
+                    status_val = 'Зачтено :3'
+
             if e.get('points'):
-                lines.append(f"   🎯 Баллы: {html.escape(e['points'])} | Статус: {e['status']}")
+                pts_lbl = "🎯 Балльчики:" if is_femboy else "🎯 Баллы:"
+                lines.append(f"   {pts_lbl} {html.escape(e['points'])} | Статус: {status_val}")
             else:
-                lines.append(f"   Статус: {e['status']}")
+                lines.append(f"   Статус: {status_val}")
             lines.append("")
 
             ext_id = str(it.external_id or it.id)
@@ -1892,8 +2098,17 @@ class TelegramBot:
 
     def _run_check_async(self, user_id: int, chat_id: str):
         """Ручная проверка: одно сообщение, которое потом правится результатом."""
-        status_id = self.send_message_id(chat_id, "🔄 Захожу в Timeline…\n\n"
-                                          + joke_html('checking'))
+        user_for_check = None
+        if self.app is not None:
+            with self.app.app_context():
+                from app.models import User
+                user_for_check = User.query.get(user_id) if hasattr(User, 'query') else None
+        is_femboy = bool(user_for_check and getattr(user_for_check, 'theme_femboy', False))
+
+        start_msg = ("🐾 Стучусь лапкой в Timeline… :3\n\n" + joke_html('checking', user=user_for_check)
+                     if is_femboy else
+                     "🔄 Захожу в Timeline…\n\n" + joke_html('checking', user=user_for_check))
+        status_id = self.send_message_id(chat_id, start_msg)
 
         def worker():
             from app.scheduler.jobs import CHECK_SKIPPED, check_user
@@ -1916,7 +2131,10 @@ class TelegramBot:
                     keyboard = None
                 elif result == CHECK_SKIPPED:
                     text, keyboard = self._build_status_page(user)
-                    text = "🕒 Только что проверял — не долблю сайт зря.\n\n" + text
+                    skip_prefix = ("🕒 Только что тыкал лапкой — не тревожу сайт зря :3\n\n"
+                                   if getattr(user, 'theme_femboy', False) else
+                                   "🕒 Только что проверял — не долблю сайт зря.\n\n")
+                    text = skip_prefix + text
                 else:
                     text, keyboard = self._build_status_page(user)
                 if not self.edit_message(chat_id, status_id, text, keyboard):

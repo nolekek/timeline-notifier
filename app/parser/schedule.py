@@ -345,7 +345,7 @@ def _format_lesson_block(l: dict) -> str:
     return "\n".join(lines)
 
 
-def format_day_schedule(day: dict, group_name: str, note: str = "") -> str:
+def format_day_schedule(day: dict, group_name: str, note: str = "", is_femboy: bool = False) -> str:
     """Форматирует один день расписания в Telegram HTML с блоком цитаты <blockquote>."""
     d_obj: Optional[date] = day.get('date')
     if d_obj:
@@ -356,8 +356,10 @@ def format_day_schedule(day: dict, group_name: str, note: str = "") -> str:
         title = day.get('day_title', '')
         header_date = f"{weekday}, {title}".strip(', ') if weekday else title
 
+    group_title = f"<b>📅 Расписаньице — {_esc(group_name)} :3</b>" if is_femboy else f"<b>📅 Расписание — {_esc(group_name)}</b>"
+
     lines = [
-        f"<b>📅 Расписание — {_esc(group_name)}</b>",
+        group_title,
         f"📅 <b>{_esc(header_date)}</b>",
     ]
     if note:
@@ -365,7 +367,8 @@ def format_day_schedule(day: dict, group_name: str, note: str = "") -> str:
 
     lessons = day.get('lessons', [])
     if not lessons:
-        lines.append("<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>")
+        empty_day_msg = "<blockquote><i>Парочек нет, можно отдыхать и мурчать! 🎉 :3</i></blockquote>" if is_femboy else "<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>"
+        lines.append(empty_day_msg)
         return "\n".join(lines)
 
     lesson_blocks = [_format_lesson_block(l) for l in lessons]
@@ -374,7 +377,7 @@ def format_day_schedule(day: dict, group_name: str, note: str = "") -> str:
     return "\n".join(lines)
 
 
-def format_day_compact(day: dict) -> str:
+def format_day_compact(day: dict, is_femboy: bool = False) -> str:
     """Компактный формат дня для недельного расписания."""
     d_obj: Optional[date] = day.get('date')
     if d_obj:
@@ -388,7 +391,8 @@ def format_day_compact(day: dict) -> str:
 
     lessons = day.get('lessons', [])
     if not lessons:
-        return f"{day_hdr}\n<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>"
+        empty_day_msg = "<blockquote><i>Парочек нет, можно отдыхать и мурчать! 🎉 :3</i></blockquote>" if is_femboy else "<blockquote><i>Пар нет, можно отдыхать! 🎉</i></blockquote>"
+        return f"{day_hdr}\n{empty_day_msg}"
 
     lesson_blocks = [_format_lesson_block(l) for l in lessons]
     inner_quote = "\n\n".join(b for b in lesson_blocks if b)
@@ -410,15 +414,19 @@ def _week_window(today: date, offset_weeks: int, smart_weekend: bool = True) -> 
 
 
 def _format_week(week_days: list[dict], group_name: str, monday: date, sunday: date,
-                 is_smart_next: bool = False) -> str:
+                 is_smart_next: bool = False, is_femboy: bool = False) -> str:
     note = " <i>(следующая учебная неделя)</i>" if is_smart_next else ""
-    header = (f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
-              f"{_esc(group_name)}</b>{note}\n")
+    if is_femboy:
+        header = (f"<b>📅 Неделька {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
+                  f"{_esc(group_name)} :3</b>{note}\n")
+    else:
+        header = (f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
+                  f"{_esc(group_name)}</b>{note}\n")
     sep = "\n\n"
     formatted_days = []
     total_len = len(header) + len(sep)
     for d in week_days:
-        day_str = format_day_compact(d)
+        day_str = format_day_compact(d, is_femboy=is_femboy)
         if total_len + len(day_str) + len(sep) > 3950:
             formatted_days.append("<i>...остальные дни недели доступны на сайте или по кнопкам дней</i>")
             break
@@ -430,7 +438,7 @@ def _format_week(week_days: list[dict], group_name: str, monday: date, sunday: d
 
 
 def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool = False,
-                      offset_weeks: int = 0) -> str:
+                      offset_weeks: int = 0, is_femboy: bool = False) -> str:
     """Формирует текст расписания в зависимости от выбранного режима.
 
     mode:
@@ -441,6 +449,10 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
     offset_weeks = int(offset_weeks or 0)
     days = get_group_schedule(group_name, force_refresh=force_refresh)
     if not days:
+        if is_femboy:
+            return (f"<b>📅 Расписаньице — {_esc(group_name)} :3</b>\n\n"
+                    f"Парочек в расписании не найдено :3\n"
+                    f"Проверь название группки на <a href='{SCHEDULE_MAIN_URL}'>сайте УрГПУ</a>.")
         return (f"<b>📅 Расписание — {_esc(group_name)}</b>\n\n"
                 f"Занятий в расписании не найдено.\n"
                 f"Проверь название группы на <a href='{SCHEDULE_MAIN_URL}'>сайте УрГПУ</a>.")
@@ -453,16 +465,16 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
         monday, sunday = _week_window(today, offset_weeks, smart_weekend=True)
         week_days = [d for d in days if d['date'] and monday <= d['date'] <= sunday]
         if not week_days:
-            return (f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — "
-                    f"{_esc(group_name)}</b>\n\n"
-                    "<i>На эту неделю пар не найдено (каникулы или сайт не отдаёт расписание).</i>")
-        return _format_week(week_days, group_name, monday, sunday, is_smart_next=is_smart_next)
+            hdr = f"<b>📅 Неделька {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — {_esc(group_name)} :3</b>" if is_femboy else f"<b>📅 Неделя {monday.strftime('%d.%m')} – {sunday.strftime('%d.%m')} — {_esc(group_name)}</b>"
+            msg = "<i>На эту недельку парочек не найдено (каникулы или сайт отдыхает) :3</i>" if is_femboy else "<i>На эту неделю пар не найдено (каникулы или сайт не отдаёт расписание).</i>"
+            return f"{hdr}\n\n{msg}"
+        return _format_week(week_days, group_name, monday, sunday, is_smart_next=is_smart_next, is_femboy=is_femboy)
 
     if mode == 'today':
         # Ищем точный день
         for d in days:
             if d['date'] == today:
-                return format_day_schedule(d, group_name)
+                return format_day_schedule(d, group_name, is_femboy=is_femboy)
 
         # Если сегодня выходной или пар нет, ищем ближайший следующий день
         next_day = None
@@ -472,16 +484,17 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
                 break
 
         if next_day:
-            note = "💡 На сегодня занятий нет. Ближайший учебный день:"
-            return format_day_schedule(next_day, group_name, note=note)
+            note = "💡 На сегодня парочек нет :3 Ближайший учебный денёк:" if is_femboy else "💡 На сегодня занятий нет. Ближайший учебный день:"
+            return format_day_schedule(next_day, group_name, note=note, is_femboy=is_femboy)
 
         # Если все даты в прошлом — покажем первый доступный день
-        return format_day_schedule(days[0], group_name, note="💡 Актуальные пары:")
+        note_act = "💡 Актуальные парочки :3" if is_femboy else "💡 Актуальные пары:"
+        return format_day_schedule(days[0], group_name, note=note_act, is_femboy=is_femboy)
 
     if mode == 'tomorrow':
         for d in days:
             if d['date'] == tomorrow:
-                return format_day_schedule(d, group_name)
+                return format_day_schedule(d, group_name, is_femboy=is_femboy)
 
         # Если на завтра нет
         next_day = None
@@ -491,11 +504,15 @@ def get_schedule_view(group_name: str, mode: str = 'today', force_refresh: bool 
                 break
 
         if next_day:
-            note = f"💡 На завтра ({tomorrow.strftime('%d.%m')}) занятий нет. Следующий учебный день:"
-            return format_day_schedule(next_day, group_name, note=note)
+            note = (f"💡 На завтра ({tomorrow.strftime('%d.%m')}) парочек нет :3 Следующий учебный денёк:"
+                    if is_femboy else
+                    f"💡 На завтра ({tomorrow.strftime('%d.%m')}) занятий нет. Следующий учебный день:")
+            return format_day_schedule(next_day, group_name, note=note, is_femboy=is_femboy)
 
-        return (f"<b>📅 Расписание — {_esc(group_name)}</b>\n"
+        title_grp = f"<b>📅 Расписаньице — {_esc(group_name)} :3</b>\n" if is_femboy else f"<b>📅 Расписание — {_esc(group_name)}</b>\n"
+        no_par = "<blockquote><i>На завтра парочек не запланировано! 🎉 :3</i></blockquote>" if is_femboy else "<blockquote><i>На завтра занятий не запланировано! 🎉</i></blockquote>"
+        return (f"{title_grp}"
                 f"📅 <b>{tomorrow.strftime('%d.%m.%Y')}</b>\n"
-                f"<blockquote><i>На завтра занятий не запланировано! 🎉</i></blockquote>")
+                f"{no_par}")
 
-    return format_day_schedule(days[0], group_name)
+    return format_day_schedule(days[0], group_name, is_femboy=is_femboy)

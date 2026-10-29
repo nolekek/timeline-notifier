@@ -3,7 +3,7 @@
 
 # Timeline Notifier
 
-[![Release](https://img.shields.io/badge/Release-v3.1.1--stable-brightgreen.svg)](#)
+[![Release](https://img.shields.io/badge/Release-v3.2.0--stable-brightgreen.svg)](#)
 [![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](#)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](#)
 [![Architecture](https://img.shields.io/badge/Architecture-ARM64%20%7C%20x86__64-orange.svg)](#)
