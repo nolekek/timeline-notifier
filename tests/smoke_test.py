@@ -940,5 +940,104 @@ with app.app_context():
     sched_empty_fb = sched_mod.format_day_schedule(empty_day, 'МКТ-2531', is_femboy=True)
     assert 'Парочек нет, можно отдыхать и мурчать! 🎉 :3' in sched_empty_fb
 
+    # =========================================================================
+    # 20. [v3.3.0] Сообщения пользователям от администратора (/admin, /msg, Web)
+    # =========================================================================
+    # 20.1 Кнопки в админ-клавиатуре
+    adm_kb = bot._admin_keyboard()
+    adm_callbacks = [b['callback_data'] for row in adm_kb['inline_keyboard'] for b in row]
+    assert 'admin_msg_pick' in adm_callbacks
+    assert 'admin_broadcast_prompt' in adm_callbacks
+
+    ADMIN_ID = '888777'
+    app.config['ADMIN_CHAT_ID'] = ADMIN_ID
+
+    # 20.2 Меню выбора пользователя для отправки сообщения
+    reset_outbox()
+    bot._handle_callback({
+        'id': 'cb-adm-pick', 'data': 'admin_msg_pick',
+        'message': {'chat': {'id': int(ADMIN_ID), 'type': 'private'}, 'message_id': 100},
+        'from': {'id': int(ADMIN_ID), 'first_name': 'Admin'},
+    })
+    assert any('Выберите получателя' in t for t in texts('editMessageText'))
+
+    # 20.3 Выбор конкретного пользователя
+    reset_outbox()
+    bot._handle_callback({
+        'id': 'cb-adm-to', 'data': 'admin_msg_to:123456',
+        'message': {'chat': {'id': int(ADMIN_ID), 'type': 'private'}, 'message_id': 100},
+        'from': {'id': int(ADMIN_ID), 'first_name': 'Admin'},
+    })
+    assert bot._admin_state.get(ADMIN_ID, {}).get('action') == 'msg_user'
+    assert bot._admin_state.get(ADMIN_ID, {}).get('target_chat_id') == '123456'
+    assert any('Отправка сообщения пользователю' in t for t in texts('editMessageText'))
+
+    # 20.4 Админ вводит текст сообщения — доставка пользователю 123456
+    reset_outbox()
+    bot._handle_message(msg(ADMIN_ID, "Привет! Пожалуйста, проверь логин в ЭИОС."))
+    assert ADMIN_ID not in bot._admin_state
+    user_msgs = [p.get('text', '') for m, p in SENT if m == 'sendMessage' and str(p.get('chat_id')) == '123456']
+    assert len(user_msgs) > 0, SENT
+    assert 'Сообщение от администратора' in user_msgs[0]
+    assert 'проверь логин' in user_msgs[0]
+    admin_confirm = [p.get('text', '') for m, p in SENT if m == 'sendMessage' and str(p.get('chat_id')) == ADMIN_ID]
+    assert any('успешно доставлено' in t for t in admin_confirm), admin_confirm
+
+    # 20.5 Отмена отправки
+    reset_outbox()
+    bot._handle_callback({
+        'id': 'cb-adm-to2', 'data': 'admin_msg_to:123456',
+        'message': {'chat': {'id': int(ADMIN_ID), 'type': 'private'}, 'message_id': 101},
+        'from': {'id': int(ADMIN_ID), 'first_name': 'Admin'},
+    })
+    assert ADMIN_ID in bot._admin_state
+    bot._handle_message(msg(ADMIN_ID, "/cancel"))
+    assert ADMIN_ID not in bot._admin_state
+    assert any('Отправка отменена' in t for t in texts('sendMessage'))
+
+    # 20.6 Прямая команда /msg
+    reset_outbox()
+    bot._handle_message(msg(ADMIN_ID, "/msg 123456 Срочное сообщение через команду"))
+    user_msgs = [p.get('text', '') for m, p in SENT if m == 'sendMessage' and str(p.get('chat_id')) == '123456']
+    assert len(user_msgs) > 0
+    assert 'Срочное сообщение через команду' in user_msgs[0]
+
+    # /msg без параметров
+    reset_outbox()
+    bot._handle_message(msg(ADMIN_ID, "/msg"))
+    assert any('Использование:' in t for t in texts('sendMessage'))
+
+    # /msg неизвестный пользователь
+    reset_outbox()
+    bot._handle_message(msg(ADMIN_ID, "/msg unknown_student_xyz текст"))
+    assert any('не найден в базе' in t for t in texts('sendMessage'))
+
+    # 20.7 Кнопка ответа под входящим feedback
+    reset_outbox()
+    bot._cmd_feedback(user_fb, '555444', 'Тестовый отзыв от студента')
+    fb_admin_msg = [p for m, p in SENT if m == 'sendMessage' and str(p.get('chat_id')) == ADMIN_ID]
+    assert len(fb_admin_msg) > 0
+    reply_btn = fb_admin_msg[0].get('reply_markup', {}).get('inline_keyboard', [[{}]])[0][0]
+    assert reply_btn.get('callback_data') == 'admin_msg_to:555444'
+
+    # 20.8 Веб-маршрут /users/<id>/message
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess['csrf_token'] = 'test-token'
+        orig_get_sender = bot_mod.get_sender
+        bot_mod.get_sender = lambda _app: bot
+        try:
+            reset_outbox()
+            res = client.post(f'/users/{user_fb.id}/message', data={
+                'csrf_token': 'test-token',
+                'message': 'Сообщение из веб-панели',
+            }, follow_redirects=True)
+            assert res.status_code == 200
+            web_user_msgs = [p.get('text', '') for m, p in SENT if m == 'sendMessage' and str(p.get('chat_id')) == str(user_fb.chat_id)]
+            assert len(web_user_msgs) > 0
+            assert 'Сообщение из веб-панели' in web_user_msgs[0]
+        finally:
+            bot_mod.get_sender = orig_get_sender
+
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

@@ -200,6 +200,51 @@ def user_test(user_id: int):
     return redirect(url_for('web.user_detail', user_id=user.id))
 
 
+@web_bp.route('/users/<int:user_id>/message', methods=['POST'])
+def user_send_message(user_id: int):
+    user = db.session.get(User, user_id)
+    sender = get_sender(current_app._get_current_object())
+    if user is None:
+        flash('Пользователь не найден', 'error')
+        return redirect(url_for('web.index'))
+    if sender is None:
+        flash('Бот не запущен — задай токен в настройках', 'error')
+        return redirect(url_for('web.user_detail', user_id=user.id))
+
+    msg_text = (request.form.get('message') or '').strip()
+    if not msg_text:
+        flash('Текст сообщения не может быть пустым', 'error')
+        return redirect(url_for('web.user_detail', user_id=user.id))
+
+    import html as html_mod
+    user_msg = f"📩 <b>Сообщение от администратора:</b>\n\n{html_mod.escape(msg_text)}"
+    ok = sender.send_message(user.chat_id, user_msg)
+    if ok:
+        flash(f'Сообщение успешно отправлено пользователю {user.title}', 'success')
+    else:
+        flash(f'Не удалось доставить сообщение пользователю {user.title} (возможно, бот заблокирован)', 'error')
+    return redirect(url_for('web.user_detail', user_id=user.id))
+
+
+@web_bp.route('/broadcast', methods=['POST'])
+def broadcast():
+    sender = get_sender(current_app._get_current_object())
+    if sender is None:
+        flash('Бот не запущен — задай токен в настройках', 'error')
+        return redirect(url_for('web.index'))
+
+    msg_text = (request.form.get('message') or '').strip()
+    if not msg_text:
+        flash('Текст рассылки не может быть пустым', 'error')
+        return redirect(url_for('web.index'))
+
+    import html as html_mod
+    broadcast_msg = f"📢 <b>Объявление от администратора:</b>\n\n{html_mod.escape(msg_text)}"
+    threading.Thread(target=sender._broadcast, args=(broadcast_msg,), daemon=True).start()
+    flash('Рассылка запущена в фоновом режиме', 'info')
+    return redirect(url_for('web.index'))
+
+
 @web_bp.route('/users/<int:user_id>/delete', methods=['POST'])
 def user_delete(user_id: int):
     user = db.session.get(User, user_id)

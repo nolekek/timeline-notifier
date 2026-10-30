@@ -187,6 +187,7 @@ class TelegramBot:
         self._lock = threading.Lock()
         self._last_error = None
         self._login_attempts = {}
+        self._admin_state = {}
 
     # ------------------------------------------------------------------ API
 
@@ -474,6 +475,10 @@ class TelegramBot:
                 [
                     {'text': '🌐 ЭИОС', 'callback_data': 'admin_health_eios'},
                     {'text': '🤖 Telegram API', 'callback_data': 'admin_health_tg'},
+                ],
+                [
+                    {'text': '✉️ Написать юзеру', 'callback_data': 'admin_msg_pick'},
+                    {'text': '📢 Рассылка', 'callback_data': 'admin_broadcast_prompt'},
                 ],
                 maint_btn,
             ]
@@ -1416,6 +1421,72 @@ class TelegramBot:
                                       self._admin_keyboard(maintenance_mode=False))
                 return
 
+            if data == 'admin_msg_pick':
+                self.answer_callback(cb_id)
+                from app.models import User
+                users = User.query.filter_by(is_registered=True).order_by(
+                    User.last_check_at.desc().nullslast(), User.id.desc()
+                ).limit(8).all()
+                if not users:
+                    users = User.query.order_by(User.id.desc()).limit(8).all()
+
+                buttons = []
+                for u in users:
+                    display = f"👤 {u.title}"
+                    if u.timeline_login:
+                        display += f" ({u.timeline_login})"
+                    buttons.append([{'text': display[:36], 'callback_data': f'admin_msg_to:{u.chat_id}'}])
+                buttons.append([{'text': '🔙 Назад в меню', 'callback_data': 'admin'}])
+
+                text = (
+                    "<b>✉️ Выберите получателя:</b>\n\n"
+                    "Нажмите на пользователя из списка ниже, либо отправьте команду:\n"
+                    "<code>/msg &lt;chat_id или логин&gt; &lt;текст&gt;</code>"
+                )
+                self.edit_message(chat_id, message_id, text, {'inline_keyboard': buttons})
+                return
+
+            if data.startswith('admin_msg_to:'):
+                self.answer_callback(cb_id)
+                from app.models import User
+                target_cid = data.split(':', 1)[1]
+                target_user = User.query.filter_by(chat_id=target_cid).first()
+                name = target_user.title if target_user else f"chat_id {target_cid}"
+                self._admin_state[str(chat_id)] = {
+                    'action': 'msg_user',
+                    'target_chat_id': str(target_cid),
+                    'target_name': name,
+                }
+                text = (
+                    f"✍️ <b>Отправка сообщения пользователю {html.escape(name)}</b>\n"
+                    f"Chat ID: <code>{target_cid}</code>\n\n"
+                    "Напишите текст сообщения в чат следующим сообщением.\n"
+                    "<i>Поддерживается форматирование Telegram. Для отмены нажмите кнопку ниже или введите /cancel.</i>"
+                )
+                cancel_kb = {'inline_keyboard': [[{'text': '❌ Отмена', 'callback_data': 'admin_msg_cancel'}]]}
+                self.edit_message(chat_id, message_id, text, cancel_kb)
+                return
+
+            if data == 'admin_broadcast_prompt':
+                self.answer_callback(cb_id)
+                self._admin_state[str(chat_id)] = {
+                    'action': 'broadcast',
+                }
+                text = (
+                    "📢 <b>Рассылка всем пользователям</b>\n\n"
+                    "Напишите текст сообщения в чат следующим сообщением (или используйте команду <code>/broadcast текст</code>).\n\n"
+                    "<i>Сообщение будет отправлено всем активным пользователям бота.</i>"
+                )
+                cancel_kb = {'inline_keyboard': [[{'text': '❌ Отмена', 'callback_data': 'admin_msg_cancel'}]]}
+                self.edit_message(chat_id, message_id, text, cancel_kb)
+                return
+
+            if data == 'admin_msg_cancel':
+                self.answer_callback(cb_id, "Отменено")
+                self._admin_state.pop(str(chat_id), None)
+                self.edit_message(chat_id, message_id, self._admin_text(), self._admin_keyboard())
+                return
+
             self.answer_callback(cb_id, 'Неизвестное действие')
             return
 
@@ -1692,10 +1763,43 @@ class TelegramBot:
             return
 
         # --- команды, доступные всегда ---
+        # --- обработка интерактивных действий администратора (ввод текста для юзера / рассылки) ---
+        if is_admin and str(chat_id) in self._admin_state:
+            state = self._admin_state[str(chat_id)]
+            if low in ('/cancel', 'отмена') or norm == 'отмена':
+                self._admin_state.pop(str(chat_id), None)
+                self.send_message(chat_id, "❌ Отправка отменена.", reply_markup=self._admin_keyboard())
+                return
+
+            action = state.get('action')
+            if action == 'msg_user':
+                self._admin_state.pop(str(chat_id), None)
+                target_cid = state['target_chat_id']
+                target_name = state.get('target_name', target_cid)
+                user_msg = f"📩 <b>Сообщение от администратора:</b>\n\n{text}"
+                ok = self.send_message(target_cid, user_msg)
+                if ok:
+                    self.send_message(chat_id,
+                                      f"✅ Сообщение успешно доставлено пользователю <b>{html.escape(target_name)}</b> (<code>{target_cid}</code>)!\n\n"
+                                      f"<blockquote>{html.escape(text)}</blockquote>",
+                                      reply_markup=self._admin_keyboard())
+                else:
+                    self.send_message(chat_id,
+                                      f"⚠️ Не удалось доставить сообщение пользователю <b>{html.escape(target_name)}</b> (<code>{target_cid}</code>).\n"
+                                      "Возможно, пользователь заблокировал бота.",
+                                      reply_markup=self._admin_keyboard())
+                return
+            elif action == 'broadcast':
+                self._admin_state.pop(str(chat_id), None)
+                self.send_message(chat_id, "🚀 Запускаю рассылку…", reply_markup=self._admin_keyboard())
+                threading.Thread(target=self._broadcast, args=(text,), daemon=True).start()
+                return
+
         if low.startswith('/start') or norm == 'start':
             self._cmd_start(user, chat_id)
             return
         if low in ('/cancel', 'отмена') or norm == 'отмена':
+            self._admin_state.pop(str(chat_id), None)
             user.state = 'ready' if user.is_registered else 'login'
             user.pending_login = None
             db.session.commit()
@@ -1705,7 +1809,9 @@ class TelegramBot:
             self.send_message(chat_id, self._help_text(user=user),
                               reply_markup=self._main_keyboard(user) if user.is_registered else None)
             return
+
         if low.startswith('/admin') and is_admin:
+            self._admin_state.pop(str(chat_id), None)
             self.send_message(chat_id, self._admin_text(),
                               reply_markup=self._admin_keyboard())
             return
@@ -1715,6 +1821,18 @@ class TelegramBot:
                 self.send_message(chat_id, "Использование: <code>/broadcast текст</code>")
                 return
             self._broadcast(body)
+            return
+        if (low.startswith('/msg') or low.startswith('/message')) and is_admin:
+            cmd = '/msg' if low.startswith('/msg') else '/message'
+            rest = text[len(cmd):].strip()
+            parts = rest.split(maxsplit=1)
+            if len(parts) < 2:
+                self.send_message(chat_id,
+                                  "Использование: <code>/msg &lt;chat_id|логин|id&gt; текст</code>\n\n"
+                                  "Пример: <code>/msg 999333 Привет, обнови данные в /login</code>")
+                return
+            target_query, body = parts[0].strip(), parts[1].strip()
+            self._send_admin_message_to_user(chat_id, target_query, body)
             return
 
         # --- Расписание доступно для любого пользователя ---
@@ -2090,7 +2208,8 @@ class TelegramBot:
             f"От: <b>{html.escape(sender_info)}</b> (ID: <code>{chat_id}</code>, Группа: <code>{html.escape(user.current_group)}</code>)\n\n"
             f"{html.escape(msg_text)}"
         )
-        ok = self.send_message(admin_chat_id, admin_msg)
+        fb_kb = {'inline_keyboard': [[{'text': '✉️ Ответить пользователю', 'callback_data': f'admin_msg_to:{chat_id}'}]]}
+        ok = self.send_message(admin_chat_id, admin_msg, reply_markup=fb_kb)
         if ok:
             self.send_message(chat_id, "✅ Твоё сообщение успешно отправлено администратору! Спасибо.")
         else:
@@ -2190,6 +2309,46 @@ class TelegramBot:
         admin = self.app.config.get('ADMIN_CHAT_ID') if self.app else None
         if admin:
             self.send_message(admin, f"Рассылка: доставлено {sent} из {len(chat_ids)}")
+
+    def _send_admin_message_to_user(self, admin_chat_id: str, target_query: str, body: str) -> bool:
+        """Отправка персонального сообщения пользователю от имени администратора."""
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._send_admin_message_to_user(admin_chat_id, target_query, body)
+        from app.models import User
+        target_user = User.query.filter_by(chat_id=str(target_query)).first()
+        if not target_user:
+            target_user = User.query.filter(User.timeline_login.ilike(target_query)).first()
+        if not target_user and str(target_query).isdigit():
+            target_user = User.query.get(int(target_query))
+
+        if target_user:
+            target_cid = str(target_user.chat_id)
+            target_name = target_user.title
+        elif str(target_query).isdigit():
+            target_cid = str(target_query)
+            target_name = f"chat_id {target_query}"
+        else:
+            self.send_message(admin_chat_id,
+                              f"❌ Пользователь «<code>{html.escape(target_query)}</code>» не найден в базе данных.")
+            return False
+
+        user_msg = f"📩 <b>Сообщение от администратора:</b>\n\n{body}"
+        ok = self.send_message(target_cid, user_msg)
+        if ok:
+            self.send_message(
+                admin_chat_id,
+                f"✅ Сообщение успешно доставлено пользователю <b>{html.escape(target_name)}</b> (<code>{target_cid}</code>)!\n\n"
+                f"<blockquote>{html.escape(body)}</blockquote>"
+            )
+            return True
+        else:
+            self.send_message(
+                admin_chat_id,
+                f"⚠️ Не удалось доставить сообщение пользователю <b>{html.escape(target_name)}</b> (<code>{target_cid}</code>).\n"
+                "Возможно, пользователь заблокировал бота."
+            )
+            return False
 
     # -------------------------------------------------------------- polling
 

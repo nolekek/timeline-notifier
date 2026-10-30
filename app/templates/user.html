@@ -43,6 +43,16 @@
             <button type="submit" class="danger">Удалить</button>
         </form>
     </div>
+
+    <hr style="margin: 1.5rem 0; opacity: 0.15;">
+    <h3>✉️ Написать пользователю в Telegram</h3>
+    <form method="POST" action="{{ url_for('web.user_send_message', user_id=user.id) }}">
+        <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+        <label>Текст сообщения
+            <textarea name="message" rows="3" placeholder="Привет! Пожалуйста, обнови пароль ЭИОС..." required style="width: 100%; box-sizing: border-box;"></textarea>
+        </label>
+        <button type="submit">✉️ Отправить сообщение</button>
+    </form>
 </section>
 
 <section class="card">

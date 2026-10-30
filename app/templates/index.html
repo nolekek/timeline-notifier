@@ -49,6 +49,17 @@
 </section>
 
 <section class="card">
+    <h2>📢 Рассылка сообщений в Telegram</h2>
+    <form method="POST" action="{{ url_for('web.broadcast') }}">
+        <input type="hidden" name="csrf_token" value="{{ session['csrf_token'] }}">
+        <label>Текст рассылки для всех активных пользователей
+            <textarea name="message" rows="3" placeholder="Важное объявление для студентов..." required style="width: 100%; box-sizing: border-box;"></textarea>
+        </label>
+        <button type="submit">📢 Отправить рассылку всем</button>
+    </form>
+</section>
+
+<section class="card">
     <h2>Пользователи ({{ rows|length }})</h2>
     {% if rows %}
     <table>
