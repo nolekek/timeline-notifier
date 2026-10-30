@@ -17,6 +17,8 @@ services:
     image: timeline-notifier:latest
     container_name: timeline-notifier
     restart: unless-stopped
+    depends_on:
+      - sota-proxy
 
     # Пишем в ./instance от имени владельца этой папки (по умолчанию uid/gid 1000 —
     # типичный первый пользователь Ubuntu). Так не нужны никакие chown и sudo:
@@ -78,5 +80,7 @@ services:
       SOTAVPN_KEY: "${SOTAVPN_KEY:-}"
     mem_limit: 128m
     mem_reservation: 32m
-    ports:
-      - "127.0.0.1:1080:1080"
+    # Внутренний порт для контейнера бота (sota-proxy:1080).
+    # Не биндим на хост 127.0.0.1:1080, чтобы исключить конфликты портов на сервере.
+    expose:
+      - "1080"
