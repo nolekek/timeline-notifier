@@ -85,9 +85,22 @@ def fetch_sota_outbound(access_key: str, gate_id: int, hwid: str) -> dict | None
 
 
 def generate_singbox_config(outbounds: list, socks_port: int) -> dict:
+    # Удаляем устаревшие / неподдерживаемые типы outbounds (type: "dns" удален в sing-box 1.13+)
+    valid_outbounds = [o for o in outbounds if o.get("type") != "dns"]
+
+    for o in valid_outbounds:
+        if "multiplex" in o and not o["multiplex"]:
+            del o["multiplex"]
+        if "transport" in o and not o["transport"]:
+            del o["transport"]
+
     # Гарантируем наличие direct outbound
-    if not any(o.get("tag") == "direct" for o in outbounds):
-        outbounds.append({"type": "direct", "tag": "direct"})
+    if not any(o.get("tag") == "direct" for o in valid_outbounds):
+        valid_outbounds.append({"type": "direct", "tag": "direct"})
+
+    # Гарантируем наличие block outbound
+    if not any(o.get("tag") == "block" for o in valid_outbounds):
+        valid_outbounds.append({"type": "block", "tag": "block"})
 
     return {
         "log": {
@@ -102,7 +115,7 @@ def generate_singbox_config(outbounds: list, socks_port: int) -> dict:
                 "listen_port": socks_port,
             }
         ],
-        "outbounds": outbounds,
+        "outbounds": valid_outbounds,
         "route": {
             "rules": [
                 {
@@ -167,6 +180,9 @@ def main():
     if not outbounds:
         logger.error("КРИТИЧЕСКАЯ ОШИБКА: Не удалось получить ноды SotaVPN ни из API, ни из кэша!")
         sys.exit(1)
+
+    # Фильтруем устаревшие outbounds
+    outbounds = [o for o in outbounds if o.get("type") != "dns"]
 
     # Сохраняем в кэш
     try:
