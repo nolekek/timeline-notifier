@@ -652,6 +652,8 @@ with app.app_context():
 
     # 14.6 Утренний дайджест с включенным гороскопом
     user_v3.digest_notify = True
+    user_v3.digest_notify_time = '00:00'
+    user_v3.digest_last_sent = None
     user_v3.horoscope_notify = True
     user_v3.zodiac_sign = 'aquarius'
     user_v3.theme_femboy = False

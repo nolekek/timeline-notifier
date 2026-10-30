@@ -62,20 +62,21 @@ services:
         max-size: "5m"
         max-file: "2"
 
-  # Опциональный встроенный сервис tg-ws-proxy (для серверов в РФ)
-  # Чтобы включить: в .env раскомментируй TELEGRAM_PROXY=socks5h://tg-proxy:1080
-  # и запускай: docker compose --profile proxy up -d --build
-  tg-proxy:
+  # Встроенный SotaVPN прокси (VLESS Reality / sing-box) для обхода блокировок Telegram в РФ
+  # В .env: SOTAVPN_KEY=твой-ключ-uuid и TELEGRAM_PROXY=socks5h://sota-proxy:1080
+  sota-proxy:
     build:
-      context: .
-      dockerfile: deploy/Dockerfile.tgproxy
-    image: timeline-tg-proxy:latest
-    container_name: timeline-tg-proxy
+      context: deploy/sota-proxy
+      dockerfile: Dockerfile
+    image: timeline-sota-proxy:latest
+    container_name: timeline-sota-proxy
     restart: unless-stopped
-    profiles: ["proxy"]
+    env_file: .env
+    environment:
+      SOCKS_PORT: "1080"
+      SOTA_GATE_ID: "${SOTA_GATE_ID:-8}"
+      SOTAVPN_KEY: "${SOTAVPN_KEY:-}"
     mem_limit: 128m
     mem_reservation: 32m
-    extra_hosts:
-      - "api.telegram.org:149.154.167.220"
     ports:
       - "127.0.0.1:1080:1080"

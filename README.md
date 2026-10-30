@@ -491,11 +491,32 @@ winget install jesseduffield.lazydocker
 
 ## 4. Telegram из РФ: прокси
 
-С российского сервера `api.telegram.org` часто недоступен. В `app/bot/telegram_bot.py` все
+С российского сервера `api.telegram.org` часто недоступен из-за блокировок ТСПУ/РКН. В `app/bot/telegram_bot.py` все
 запросы идут через `requests` и уважают два параметра из `.env`:
 
-* `TELEGRAM_PROXY` — `socks5h://127.0.0.1:1080` или `http://user:pass@host:port`;
+* `TELEGRAM_PROXY` — `socks5h://sota-proxy:1080` (в Docker), `socks5h://127.0.0.1:1080` или `http://user:pass@host:port`;
 * `TELEGRAM_API_BASE` — свой мирор/реверс-прокси Bot API вместо `https://api.telegram.org`.
+
+### Вариант 0 (Рекомендуемый в Docker): встроенный SotaVPN (VLESS Reality / sing-box)
+
+Контейнер `sota-proxy` уже включен в `docker-compose.yml`. Он автоматически подключается к нодам SotaVPN по протоколу VLESS Reality + Vision и поднимает локальный SOCKS5-прокси на порту 1080.
+
+**Преимущества:**
+- Не требует установки сторонних утилит на хост.
+- Защита от блокировки доступа к университету: трафик к доменам `rsvpu.ru`, `eios.rsvpu.ru`, `timeline.rsvpu.ru` строго маршрутизируется **напрямую**, минуя VPN-туннель.
+- Автоматический fallback зеркал API SotaVPN и локальный кэш рабочей конфигурации при сбоях сети.
+
+**Настройка в `.env`:**
+```env
+SOTAVPN_KEY=твой-ключ-sotavpn-uuid
+TELEGRAM_PROXY=socks5h://sota-proxy:1080
+# TELEGRAM_API_BASE закомментировать, если был указан
+```
+Запуск:
+```bash
+docker compose up -d --build
+docker compose logs -f sota-proxy
+```
 
 ### Вариант A: tg-ws-proxy (SOCKS5 на localhost)
 

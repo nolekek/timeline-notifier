@@ -402,11 +402,11 @@ def format_day_compact(day: dict, is_femboy: bool = False) -> str:
 def _week_window(today: date, offset_weeks: int, smart_weekend: bool = True) -> tuple[date, date]:
     """Понедельник–воскресенье недели, сдвинутой на offset_weeks от сегодняшней.
 
-    В субботу и воскресенье при offset_weeks == 0 по умолчанию открывает
+    В субботу и воскресенье по умолчанию открывает
     следующую учебную неделю (начиная со следующего понедельника).
     """
     shift = 0
-    if smart_weekend and today.weekday() in (5, 6) and offset_weeks == 0:
+    if smart_weekend and today.weekday() in (5, 6):
         shift = 7 - today.weekday()
     base = today + timedelta(days=shift)
     monday = base - timedelta(days=base.weekday()) + timedelta(weeks=offset_weeks)
