@@ -67,6 +67,7 @@ def _auto_migrate():
                 existing_work = {row[1] for row in res_work}
                 work_columns = [
                     ('is_overdue', "BOOLEAN DEFAULT 0"),
+                    ('reminder_1_sent', "BOOLEAN DEFAULT 0"),
                     ('point_name', "VARCHAR(300)"),
                     ('control_text', "TEXT"),
                     ('points', "VARCHAR(50)"),

@@ -1039,5 +1039,70 @@ with app.app_context():
         finally:
             bot_mod.get_sender = orig_get_sender
 
+    # =========================================================================
+    # 21. [v3.4.0] Напоминания (24/12/1ч), неудаление просрочек, статус "Провалено", общие баллы
+    # =========================================================================
+    # 21.1 Напоминание за 1 час
+    user_v4 = User(chat_id='999888', timeline_login='v4.student', password_enc=encrypt('p'),
+                   is_registered=True, is_active=True, state='ready')
+    db.session.add(user_v4)
+    db.session.commit()
+
+    in_40_min = (datetime.now() + timedelta(minutes=40)).strftime('%d.%m.%Y %H:%M')
+    work_1h = WorkItem(user_id=user_v4.id, external_id='w_1h', discipline='Срочная лаба',
+                       deadline=in_40_min, status='Не отправлена')
+    db.session.add(work_1h)
+    db.session.commit()
+
+    groups_1h, overdue_1h = _check_deadline_reminders([work_1h], send=True)
+    assert 1 in groups_1h and len(groups_1h[1]) == 1, groups_1h
+    assert work_1h.reminder_1_sent is True
+
+    # 21.2 Список просроченного больше не чистится (даже старше 5 дней)
+    old_deadline = (datetime.now() - timedelta(days=20)).strftime('%d.%m.%Y %H:%M')
+    work_old_overdue = WorkItem(user_id=user_v4.id, external_id='w_old', discipline='Древний долг',
+                                deadline=old_deadline, status='Не отправлена', is_overdue=True,
+                                point_name='Старая тема', control_text='Старый текст')
+    db.session.add(work_old_overdue)
+    db.session.commit()
+
+    overdue_text = bot._build_overdue_text(user_v4)
+    assert 'Древний долг' in overdue_text, overdue_text
+
+    # 21.3 Статус у просроченных работ — "Провалено"
+    enriched_old = enrich_work_item(work_old_overdue)
+    assert enriched_old['status'] == 'Провалено'
+    card_text_old, _ = bot._build_work_detail(user_v4, 'w_old')
+    assert 'Провалено' in card_text_old
+
+    # 21.4 Общие баллы /scores и кнопка в меню
+    from app.bot.telegram_bot import BTN_SCORES, BTN_SCORES_FEMBOY
+    kb_v4 = bot._main_keyboard(user_v4)
+    assert any(b.get('text') == BTN_SCORES for row in kb_v4['keyboard'] for b in row)
+
+    work_psy1 = WorkItem(user_id=user_v4.id, external_id='psy1',
+                         discipline='Психология (Иванов И.И.) (МКТ-2531)',
+                         deadline=in_40_min, status='Зачтена', points='10 из 20')
+    work_psy2 = WorkItem(user_id=user_v4.id, external_id='psy2',
+                         discipline='Психология (Иванов И.И.) (МКТ-2531)',
+                         deadline=in_40_min, status='Зачтена', points='5 из 45')
+    work_math = WorkItem(user_id=user_v4.id, external_id='math1',
+                         discipline='Высшая математика (Петров П.П.)',
+                         deadline=in_40_min, status='Зачтена', points='14 из 14')
+    db.session.add_all([work_psy1, work_psy2, work_math])
+    db.session.commit()
+
+    from app.services import calculate_user_scores
+    user_scores = calculate_user_scores(user_v4.id)
+    psy_subj = next(s for s in user_scores['subjects'] if s['discipline'] == 'Психология')
+    assert psy_subj['formatted'] == 'Психология 15/65', psy_subj
+
+    reset_outbox()
+    bot._handle_message(msg('999888', BTN_SCORES))
+    scores_out = [p.get('text', '') for m, p in SENT if m == 'sendMessage' and str(p.get('chat_id')) == '999888']
+    assert len(scores_out) > 0
+    assert 'Психология' in scores_out[0] and '15/65' in scores_out[0]
+    assert 'Высшая математика' in scores_out[0] and '14/14' in scores_out[0]
+
     print(f"OK: все проверки пройдены (шуток: {sum(len(v) for v in JOKES.values())} "
           f"в {len(JOKES)} разделах)")

@@ -117,6 +117,7 @@ class WorkItem(db.Model):
     reminder_48_sent = db.Column(db.Boolean, default=False)
     reminder_24_sent = db.Column(db.Boolean, default=False)
     reminder_12_sent = db.Column(db.Boolean, default=False)
+    reminder_1_sent = db.Column(db.Boolean, default=False)
     overdue_sent = db.Column(db.Boolean, default=False)
 
     # NEW v2.1: Явный признак просроченности работы (R1)

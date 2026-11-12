@@ -40,6 +40,7 @@ HELP_TEXT = (
     "<b>Что я умею</b>\n"
     "📅 Расписание — динамическое расписание пар УрГПУ (uspu.ru)\n"
     "📊 Статус — все работы, темы, баллы и дедлайны Timeline\n"
+    "🎯 Общие баллы — суммарные баллы по всем предметам\n"
     "🔮 Гороскоп — студенческий астропрогноз на каждый день\n"
     "📋 На сегодня — дедлайны на сегодня и завтра\n"
     "💀 Просрочки — неотправленные просроченные работы\n"
@@ -50,6 +51,7 @@ HELP_TEXT = (
     "/schedule — расписание занятий\n"
     "/group МКТ-2531 — сменить учебную группу\n"
     "/status — работы, баллы и подробности\n"
+    "/scores — общие баллы по всем предметам\n"
     "/task ID — подробная карточка задания по ID\n"
     "/find слово — поиск заданий по теме и тексту\n"
     "/horoscope — студенческий гороскоп дня\n"
@@ -72,6 +74,7 @@ BTN_HELP = '❓ Помощь'
 BTN_SCHEDULE = '📅 Расписание'
 BTN_TODAY = '📋 На сегодня'
 BTN_HOROSCOPE = '🔮 Гороскоп'
+BTN_SCORES = '🎯 Общие баллы'
 
 # NEW v2.1/v3.0/v3.2: Фурри/фембой лейблы (R5)
 BTN_STATUS_FEMBOY = '🐾 Статусик :3'
@@ -81,6 +84,7 @@ BTN_PROFILE_FEMBOY = '🎀 Профиль :з'
 BTN_SCHEDULE_FEMBOY = '📅 Расписаньице :3'
 BTN_HOROSCOPE_FEMBOY = '🐾 Гороскоп :3'
 BTN_TODAY_FEMBOY = '🐾 На сегодня :3'
+BTN_SCORES_FEMBOY = '🐾 Общие балльчики :3'
 BTN_HELP_FEMBOY = '🐾 Хелп :3'
 
 HELP_TEXT_FEMBOY = (
@@ -295,6 +299,7 @@ class TelegramBot:
             b_schedule = BTN_SCHEDULE_FEMBOY
             b_horo = BTN_HOROSCOPE_FEMBOY
             b_today = BTN_TODAY_FEMBOY
+            b_scores = BTN_SCORES_FEMBOY
             b_help = BTN_HELP_FEMBOY
             placeholder = 'Выбери лапкой :3'
         else:
@@ -305,6 +310,7 @@ class TelegramBot:
             b_schedule = BTN_SCHEDULE
             b_horo = BTN_HOROSCOPE
             b_today = BTN_TODAY
+            b_scores = BTN_SCORES
             b_help = BTN_HELP
             placeholder = 'Выбери пункт меню'
 
@@ -313,7 +319,8 @@ class TelegramBot:
                 [{'text': b_status}, {'text': b_overdue}],
                 [{'text': b_check}, {'text': b_profile}],
                 [{'text': b_schedule}, {'text': b_horo}],
-                [{'text': b_today}, {'text': b_help}],
+                [{'text': b_today}, {'text': b_scores}],
+                [{'text': b_help}],
             ],
             'resize_keyboard': True,
             'is_persistent': True,
@@ -505,6 +512,12 @@ class TelegramBot:
             'расписаньице з': 'расписание',
             'расписаньице': 'расписание',
             'долги': 'просрочки',
+            'общие баллы': 'общие баллы',
+            'общие балльчики 3': 'общие баллы',
+            'общие балльчики з': 'общие баллы',
+            'общие балльчики': 'общие баллы',
+            'баллы в общем': 'общие баллы',
+            'баллы': 'общие баллы',
         }
         return aliases.get(cleaned, cleaned)
 
@@ -870,12 +883,16 @@ class TelegramBot:
 
             status_val = e['status']
             if is_femboy:
-                if status_val in ('', 'Не отправлена'):
+                if e.get('is_overdue'):
+                    status_val = 'Провалено :3'
+                elif status_val in ('', 'Не отправлена'):
                     status_val = 'Не сдано лапками :3'
                 elif 'отправлена' in status_val.lower():
                     status_val = 'Сдано лапками :3'
                 elif any(k in status_val.lower() for k in ('зачтена', 'проверена', 'принята')):
                     status_val = 'Зачтено :3'
+            elif e.get('is_overdue'):
+                status_val = 'Провалено'
 
             if e.get('points'):
                 pts_lbl = "🎯 Балльчики:" if is_femboy else "🎯 Баллы:"
@@ -947,7 +964,9 @@ class TelegramBot:
 
         status_text = e['status']
         if is_femboy:
-            if status_text in ('', 'Не отправлена'):
+            if e.get('is_overdue'):
+                status_text = 'Провалено :3'
+            elif status_text in ('', 'Не отправлена'):
                 status_text = 'Не сдано лапками :3'
             elif 'отправлена' in status_text.lower():
                 status_text = 'Сдано лапками :3'
@@ -955,6 +974,8 @@ class TelegramBot:
                 status_text = 'Зачтено :3'
             status_label = "🐾 <b>Статусик:</b>"
         else:
+            if e.get('is_overdue'):
+                status_text = 'Провалено'
             status_label = "📊 <b>Статус:</b>"
         lines.append(f"{status_label} {status_text}")
 
@@ -1097,12 +1118,8 @@ class TelegramBot:
         if self.app is not None and not has_app_context():
             with self.app.app_context():
                 return self._build_overdue_text(user)
-        from datetime import datetime, timedelta
         from app.models import WorkItem
         from app.services import enrich_work_item as _enrich
-
-        now = datetime.now()
-        cutoff = now - timedelta(days=5)
 
         raw_items = WorkItem.query.filter_by(user_id=user.id).all()
         overdue = []
@@ -1110,29 +1127,6 @@ class TelegramBot:
             e = _enrich(it)
             if not e.get('is_overdue'):
                 continue
-
-            dl = e.get('deadline')
-            if not dl:
-                continue
-
-            dl_dt = None
-            if isinstance(dl, datetime):
-                dl_dt = dl
-            else:
-                try:
-                    dl_dt = datetime.strptime(str(dl).strip(), '%d.%m.%Y %H:%M')
-                except (ValueError, TypeError):
-                    continue
-
-            curr_cutoff = cutoff
-            if curr_cutoff.tzinfo is not None and dl_dt.tzinfo is None:
-                curr_cutoff = curr_cutoff.replace(tzinfo=None)
-            elif curr_cutoff.tzinfo is None and dl_dt.tzinfo is not None:
-                dl_dt = dl_dt.replace(tzinfo=None)
-
-            if dl_dt < curr_cutoff:
-                continue
-
             overdue.append(e)
 
         is_femboy = bool(getattr(user, 'theme_femboy', False))
@@ -1935,6 +1929,8 @@ class TelegramBot:
             self.send_message(chat_id, text, reply_markup=keyboard)
         elif low.startswith('/stats') or norm in ('статистика', 'статистика :3'):
             self._cmd_stats(user, chat_id)
+        elif low.startswith(('/scores', '/points', '/баллы')) or norm in ('общие баллы', 'баллы в общем', 'баллы') or text in (BTN_SCORES, BTN_SCORES_FEMBOY):
+            self._cmd_scores(user, chat_id)
         elif low.startswith('/today') or norm in ('на сегодня', 'сегодня', 'на сегодня :3') or text in (BTN_TODAY, BTN_TODAY_FEMBOY):
             self._cmd_today(user, chat_id)
         elif low.startswith('/find') or norm.startswith('поиск'):
@@ -2101,6 +2097,41 @@ class TelegramBot:
 
         self.send_message(chat_id, '\n'.join(lines))
 
+    def _cmd_scores(self, user, chat_id: str):
+        """Команда /scores: суммарные баллы студента по всем предметам."""
+        if self.app is not None and not has_app_context():
+            with self.app.app_context():
+                return self._cmd_scores(user, chat_id)
+        from app.services import calculate_user_scores, format_score_num
+
+        data = calculate_user_scores(user.id)
+        subjects = data['subjects']
+        is_femboy = bool(getattr(user, 'theme_femboy', False))
+
+        if not subjects:
+            empty_msg = ('<i>Заданьиц пока нет :3 Нажми «🐾 Потыкать лапкой».</i>'
+                         if is_femboy else
+                         '<i>Работ пока нет. Нажми «🔄 Проверить», чтобы загрузить данные.</i>')
+            self.send_message(chat_id, empty_msg)
+            return
+
+        hdr = '🐾 <b>Общие балльчики по предметам :3</b>\n' if is_femboy else '🎯 <b>Общие баллы по предметам:</b>\n'
+        lines = [hdr]
+        for s in subjects:
+            earned_str = format_score_num(s['earned'])
+            max_str = format_score_num(s['max']) if s['max'] > 0 else '—'
+            lines.append(f"• <b>{html.escape(s['discipline'])}:</b> {earned_str}/{max_str}")
+
+        lines.append('')
+        total_lbl = '🐾 Всего набрано лапками:' if is_femboy else '📊 Всего набрано:'
+        t_earned = format_score_num(data['total_earned'])
+        t_max = format_score_num(data['total_max']) if data['total_max'] > 0 else '—'
+        pct = data['percentage']
+        lines.append(f"<b>{total_lbl}</b> {t_earned}/{t_max}  <i>({pct}%)</i>\n")
+        lines.append(joke_html('scores', user=user))
+
+        self.send_message(chat_id, '\n'.join(lines))
+
     def _cmd_horoscope(self, user, chat_id: str):
         """Команда /horoscope: вывод гороскопа на сегодня или меню выбора знака."""
         zodiac_key = getattr(user, 'zodiac_sign', None)
@@ -2162,12 +2193,16 @@ class TelegramBot:
 
             status_val = e['status']
             if is_femboy:
-                if status_val in ('', 'Не отправлена'):
+                if e.get('is_overdue'):
+                    status_val = 'Провалено :3'
+                elif status_val in ('', 'Не отправлена'):
                     status_val = 'Не сдано лапками :3'
                 elif 'отправлена' in status_val.lower():
                     status_val = 'Сдано лапками :3'
                 elif any(k in status_val.lower() for k in ('зачтена', 'проверена', 'принята')):
                     status_val = 'Зачтено :3'
+            elif e.get('is_overdue'):
+                status_val = 'Провалено'
 
             if e.get('points'):
                 pts_lbl = "🎯 Балльчики:" if is_femboy else "🎯 Баллы:"
@@ -2502,7 +2537,7 @@ def notify_new_works(sender, chat_id, works: list, user: Any = None):
     lines = ["<b>Новые работы в Timeline:</b>\n"]
     for w in works:
         if w.get('is_overdue'):
-            lines.append(f"💀 Просрочена работа <b>{html.escape(w['discipline'])}</b>")
+            lines.append(f"💀 Провалена работа <b>{html.escape(w['discipline'])}</b>")
             lines.append("  ⚠️ Срок сдачи уже прошёл!")
         else:
             lines.append(f"• <b>{html.escape(w['discipline'])}</b>")
@@ -2535,7 +2570,7 @@ def notify_status_changes(sender, chat_id, changes: list, user: Any = None):
     lines = ["<b>Изменения статуса работ:</b>\n"]
     for c in changes:
         if c.get('is_overdue'):
-            lines.append(f"💀 Просрочена: <b>{html.escape(c['discipline'])}</b>")
+            lines.append(f"💀 Провалена: <b>{html.escape(c['discipline'])}</b>")
         else:
             lines.append(f"• <b>{html.escape(c['discipline'])}</b>")
         if c.get('point_name'):
@@ -2569,8 +2604,9 @@ def notify_deadline_reminders(sender, chat_id, groups: dict, user: Any = None):
         48: '⏳ Осталось 48 часов до дедлайна',
         24: '⏳ Внимание: остался 1 день до дедлайна',
         12: '⚠️ Срочно: осталось менее 12 часов до дедлайна!',
+        1: '🔥 АЛАРМ: остался всего 1 час до дедлайна!',
     }
-    for hours in (48, 24, 12):
+    for hours in (48, 24, 12, 1):
         works = groups.get(hours) or []
         if not works:
             continue

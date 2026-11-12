@@ -124,7 +124,9 @@ def enrich_work_item(item) -> dict:
     )
 
     status_str = (raw_status or '').strip()
-    if not status_str:
+    if is_overdue:
+        display_status = 'Провалено'
+    elif not status_str:
         if point_accepted:
             display_status = 'Зачтена'
         elif work_checked:
@@ -221,5 +223,100 @@ def extract_urls(text: str | None) -> list[str]:
             seen.add(cleaned.lower())
             result.append(cleaned)
     return result
+
+
+def clean_discipline_name(name: str | None) -> str:
+    """Очищает название дисциплины от ФИО преподавателя и группы в скобках.
+
+    Пример: 'Психология (Воробьева Марина Анатольевна) (МКТ-2531)' -> 'Психология'
+    """
+    if not name:
+        return 'Без названия'
+    cleaned = re.sub(r'\s*\([^)]*\)', '', name).strip()
+    return cleaned if cleaned else name.strip()
+
+
+def parse_work_points(points_str: str | None) -> tuple[float, float]:
+    """Парсит строку баллов вида '4 из 4' или '15/65'.
+
+    Возвращает (набранные_баллы, максимальные_баллы).
+    """
+    if not points_str:
+        return 0.0, 0.0
+    m = re.search(r'([\d\.,]+)\s*(?:из|/)\s*([\d\.,]+)', str(points_str), re.IGNORECASE)
+    if m:
+        try:
+            earned = float(m.group(1).replace(',', '.'))
+            max_pts = float(m.group(2).replace(',', '.'))
+            return earned, max_pts
+        except ValueError:
+            pass
+    m_single = re.search(r'([\d\.,]+)', str(points_str))
+    if m_single:
+        try:
+            return float(m_single.group(1).replace(',', '.')), 0.0
+        except ValueError:
+            pass
+    return 0.0, 0.0
+
+
+def format_score_num(val: float) -> str:
+    """Форматирует число баллов: целое без .0, дробное с округлением."""
+    if val.is_integer():
+        return str(int(val))
+    return f"{val:.1f}".rstrip('0').rstrip('.')
+
+
+def calculate_user_scores(user_id: int) -> dict:
+    """Подсчитывает суммарные баллы студента по всем предметам.
+
+    Возвращает словарь со сводкой баллов по каждому предмету и итогом.
+    """
+    from app.models import WorkItem
+
+    items = WorkItem.query.filter_by(user_id=user_id).all()
+    grouped = {}
+
+    for it in items:
+        subj = clean_discipline_name(it.discipline)
+        earned, max_pts = parse_work_points(it.points)
+
+        if subj not in grouped:
+            grouped[subj] = {'earned': 0.0, 'max': 0.0, 'has_points': False}
+
+        if (it.points or '').strip():
+            grouped[subj]['has_points'] = True
+
+        grouped[subj]['earned'] += earned
+        grouped[subj]['max'] += max_pts
+
+    subjects = []
+    total_earned = 0.0
+    total_max = 0.0
+
+    for subj, data in grouped.items():
+        e = data['earned']
+        m = data['max']
+        total_earned += e
+        total_max += m
+        e_str = format_score_num(e)
+        m_str = format_score_num(m) if m > 0 else '—'
+        formatted = f"{subj} {e_str}/{m_str}" if m > 0 else f"{subj} {e_str}"
+        subjects.append({
+            'discipline': subj,
+            'earned': e,
+            'max': m,
+            'formatted': formatted,
+            'has_points': data['has_points'],
+        })
+
+    percentage = round((total_earned / total_max * 100), 1) if total_max > 0 else 0.0
+
+    return {
+        'subjects': subjects,
+        'total_earned': total_earned,
+        'total_max': total_max,
+        'percentage': percentage,
+    }
 
 

@@ -68,7 +68,7 @@
                 <td>{{ w.discipline }}</td>
                 <td>{{ w.deadline or '—' }}</td>
                 <td>
-                    {% if w.is_overdue %}<span class="badge-overdue">💀 Просрочено</span>
+                    {% if w.is_overdue %}<span class="badge-overdue">💀 Провалено</span>
                     {% elif w.status == 'Не отправлена' %}<span class="status-not-sent">{{ w.status }}</span>
                     {% else %}{{ w.status }}{% endif %}
                 </td>

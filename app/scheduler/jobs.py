@@ -82,10 +82,10 @@ def _check_deadline_reminders(items, send: bool = True, app=None):
     взводятся, иначе первое же ручное нажатие молча съело бы напоминание.
     """
     if is_maintenance_mode(app):
-        return {48: [], 24: [], 12: []}, []
+        return {24: [], 12: [], 1: []}, []
 
     now = datetime.now()
-    groups = {48: [], 24: [], 12: []}
+    groups = {24: [], 12: [], 1: []}
     overdue = []
 
     for item in items:
@@ -111,12 +111,6 @@ def _check_deadline_reminders(items, send: bool = True, app=None):
         hours_left = (deadline_dt - now).total_seconds() / 3600
 
         if hours_left < 0:
-            # R1: Игнорируем работы, дедлайн которых старше 5 дней (> 120 часов)
-            if deadline_dt < now - timedelta(days=5):
-                if send:
-                    item.overdue_sent = True
-                continue
-
             if not item.overdue_sent:
                 overdue.append(payload)
                 if send:
@@ -124,9 +118,18 @@ def _check_deadline_reminders(items, send: bool = True, app=None):
                     item.reminder_48_sent = True
                     item.reminder_24_sent = True
                     item.reminder_12_sent = True
+                    item.reminder_1_sent = True
             continue
 
-        if hours_left <= 12:
+        if hours_left <= 1:
+            if not getattr(item, 'reminder_1_sent', False):
+                groups[1].append(payload)
+                if send:
+                    item.reminder_48_sent = True
+                    item.reminder_24_sent = True
+                    item.reminder_12_sent = True
+                    item.reminder_1_sent = True
+        elif hours_left <= 12:
             if not item.reminder_12_sent:
                 groups[12].append(payload)
                 if send:
@@ -139,11 +142,6 @@ def _check_deadline_reminders(items, send: bool = True, app=None):
                 if send:
                     item.reminder_48_sent = True
                     item.reminder_24_sent = True
-        elif hours_left <= 48:
-            if not item.reminder_48_sent:
-                groups[48].append(payload)
-                if send:
-                    item.reminder_48_sent = True
 
     return groups, overdue
 
@@ -310,6 +308,7 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                         item.reminder_48_sent = False
                         item.reminder_24_sent = False
                         item.reminder_12_sent = False
+                        item.reminder_1_sent = False
                         item.overdue_sent = False
 
                     item.discipline = w['discipline']
