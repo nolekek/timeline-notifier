@@ -74,6 +74,7 @@ class Config:
     # --- Проверки ---
     DEFAULT_CHECK_INTERVAL = int(_env('DEFAULT_CHECK_INTERVAL', '300'))  # сек, дефолт для юзера
     SCHEDULER_TICK = int(_env('SCHEDULER_TICK', '60'))  # как часто планировщик смотрит, кому пора
+    LOW_POWER_MODE = _env('LOW_POWER_MODE', 'true').lower() in ('1', 'true', 'yes')
     CHECK_WORKERS = int(_env('CHECK_WORKERS', '4'))  # одновременных логинов в Timeline
     # Не логиниться в Timeline чаще, чем раз в N секунд на одного человека
     MIN_CHECK_GAP = int(_env('MIN_CHECK_GAP', '60'))

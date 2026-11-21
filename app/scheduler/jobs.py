@@ -293,9 +293,20 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                     if w['status'] in SKIP_STATUSES:
                         item.notified_new = True
                     db.session.add(item)
+                    db.session.flush()
+                    from app.bot.planner_jobs import record_new
+                    record_new(user, item, notify)
                     if w['status'] not in SKIP_STATUSES:
                         new_works.append(w)
                 else:
+                    from app.bot.planner_jobs import record_change
+                    tracked = [('Срок', 'deadline'), ('Статус', 'status'), ('Баллы', 'points'),
+                               ('Рецензия', 'teacher_note'), ('Задание', 'control_text')]
+                    changes = [(label, getattr(item, field), w.get(field, ''))
+                               for label, field in tracked
+                               if (getattr(item, field) or '') != (w.get(field) or '')]
+                    if changes:
+                        record_change(user, item, changes, notify)
                     old_status = item.status or ''
                     new_status = w['status'] or ''
                     old_points = item.points or ''
@@ -310,6 +321,7 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
                         item.reminder_12_sent = False
                         item.reminder_1_sent = False
                         item.overdue_sent = False
+                        item.planner_reminded = ''
 
                     item.discipline = w['discipline']
                     item.is_overdue = w.get('is_overdue', False)
@@ -344,7 +356,8 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
         db.session.commit()
 
         sender = get_sender(app) if notify else None
-        will_notify = bool(sender and user.notify_enabled)
+        from app.bot.planner import active
+        will_notify = bool(sender and user.notify_enabled and not active(user))
         if will_notify:
             if new_works:
                 notify_new_works(sender, user.chat_id, new_works)
@@ -497,7 +510,12 @@ def send_daily_digest(app):
                                      notify_enabled=True,
                                      digest_notify=True).all()
         for user in users:
-            if not _due_daily(now, getattr(user, 'digest_notify_time', None) or '08:00',
+            from app.bot.planner import active, now_local
+            from app.bot.planner_jobs import quiet, muted
+            if active(user) and quiet(user):
+                continue
+            current_now = now_local() if active(user) else now
+            if not _due_daily(current_now, getattr(user, 'digest_notify_time', None) or '08:00',
                               getattr(user, 'digest_last_sent', None),
                               default_hour=8, default_minute=0):
                 continue
@@ -505,6 +523,8 @@ def send_daily_digest(app):
             items = WorkItem.query.filter_by(user_id=user.id).all()
             urgent = []
             for it in items:
+                if active(user) and muted(user, it):
+                    continue
                 if (it.status or '') not in NOT_SENT_STATUSES:
                     continue
                 if not it.deadline:
@@ -513,13 +533,13 @@ def send_daily_digest(app):
                     dt = datetime.strptime(it.deadline, '%d.%m.%Y %H:%M')
                 except ValueError:
                     continue
-                delta = (dt - now).total_seconds()
+                delta = (dt - current_now).total_seconds()
                 if 0 < delta <= 72 * 3600:
                     urgent.append((dt, it))
 
-            user.digest_last_sent = now  # помечаем обработанным и без горящих работ
             horo_enabled = bool(getattr(user, 'horoscope_notify', False) and getattr(user, 'zodiac_sign', None))
             if not urgent and not horo_enabled:
+                user.digest_last_sent = current_now
                 db.session.commit()
                 continue
             urgent.sort(key=lambda x: x[0])
@@ -550,6 +570,7 @@ def send_daily_digest(app):
 
             sender = get_sender(app)
             if sender and sender.send_message(user.chat_id, '\n'.join(lines)):
+                user.digest_last_sent = current_now
                 db.session.commit()
 
 
@@ -567,7 +588,12 @@ def send_schedule_notify(app):
                                      notify_enabled=True,
                                      schedule_notify=True).all()
         for user in users:
-            if not _due_daily(now, getattr(user, 'schedule_notify_time', None) or '22:00',
+            from app.bot.planner import active, now_local
+            from app.bot.planner_jobs import quiet
+            if active(user) and quiet(user):
+                continue
+            current_now = now_local() if active(user) else now
+            if not _due_daily(current_now, getattr(user, 'schedule_notify_time', None) or '22:00',
                               getattr(user, 'schedule_last_sent', None),
                               default_hour=22, default_minute=0):
                 continue
@@ -580,7 +606,7 @@ def send_schedule_notify(app):
                 # «съедать» вечернее расписание
                 if sender and sender.send_message(
                         user.chat_id, '🌙 <b>Расписание на завтра:</b>\n\n' + text):
-                    user.schedule_last_sent = now
+                    user.schedule_last_sent = current_now
                     db.session.commit()
             except Exception as e:
                 logger.error(f'send_schedule_notify: {e}')
@@ -632,6 +658,18 @@ def check_schedule_changes(app):
 
                 sender = get_sender(app)
                 for u in group_users:
+                    from app.bot.planner import active
+                    if active(u):
+                        from app.bot.planner_jobs import schedule_delta
+                        if u.schedule_snapshot:
+                            delta = schedule_delta(json.loads(u.schedule_snapshot), serialized)
+                            if delta:
+                                from app.models import PlannerEvent
+                                db.session.add(PlannerEvent(user_id=u.id, kind='schedule',
+                                    text='📅 <b>Изменения расписания</b>\n\n' + delta))
+                        u.schedule_snapshot = dump
+                        u.schedule_hash = new_hash
+                        continue
                     old_hash = getattr(u, 'schedule_hash', None)
                     if not old_hash:
                         u.schedule_hash = new_hash
@@ -658,11 +696,11 @@ def start_scheduler(app):
     logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
 
     low_power = str(app.config.get('LOW_POWER_MODE', 'true')).lower() in ('1', 'true', 'yes')
-    _scheduler = BackgroundScheduler(daemon=True)
+    _scheduler = BackgroundScheduler(daemon=True, timezone='Europe/Moscow')
 
     if low_power:
-        # Режим Low Power Max: проверки 3 раза в день (8:00, 14:00, 20:00), CPU спит 99% времени
-        check_hours = app.config.get('CHECK_HOURS', '8,14,20')
+        # Remote status sync every six hours; cached deadline delivery runs independently.
+        check_hours = '0,6,12,18'
         _scheduler.add_job(
             func=check_all_users,
             args=[app, True],  # force=True, чтобы точно проверить всех по расписанию
@@ -713,9 +751,10 @@ def start_scheduler(app):
         tick = int(app.config.get('SCHEDULER_TICK', 60))
         _scheduler.add_job(
             func=check_all_users,
-            args=[app],
-            trigger='interval',
-            seconds=tick,
+            args=[app, True],
+            trigger='cron',
+            hour='0,6,12,18',
+            minute=0,
             id='check_all_users',
             replace_existing=True,
             max_instances=1,
@@ -751,7 +790,11 @@ def start_scheduler(app):
             max_instances=1,
             coalesce=True,
         )
-        logger.info(f"Планировщик запущен: тик {tick} сек")
+        logger.info("Планировщик: синхронизация Timeline каждые 6 часов (МСК)")
 
+    from app.bot.planner_jobs import process_planner_notifications
+    _scheduler.add_job(process_planner_notifications, args=[app], trigger='interval',
+                       seconds=60, id='planner_notifications', max_instances=1,
+                       coalesce=True, replace_existing=True)
     _scheduler.start()
     return _scheduler

@@ -284,6 +284,9 @@ class TelegramBot:
     @staticmethod
     def _main_keyboard(user=None) -> dict:
         """Постоянное меню внизу экрана (reply keyboard). Поддерживает фембой-тему."""
+        from app.bot.planner import active, reply_keyboard
+        if user is not None and active(user):
+            return reply_keyboard()
         is_femboy = False
         if user is not None:
             if isinstance(user, dict):
@@ -363,6 +366,7 @@ class TelegramBot:
             unlink_btn = '🗑 Удалить мои данные'
 
         rows = [
+            [{'text': '🎨 Темы', 'callback_data': 'themes'}],
             [{'text': group_btn, 'callback_data': 'change_group'}],
             [{'text': relogin_btn, 'callback_data': 'relogin'}],
             [{'text': notify_btn, 'callback_data': 'toggle_notify'}],
@@ -666,6 +670,12 @@ class TelegramBot:
     def _menu(self, chat_id: str, user=None):
         if user is None:
             user = self._get_user(chat_id)
+        from app.bot.planner import active, home_view
+        if active(user):
+            self.send_message(chat_id, '🧭 Планер · меню', reply_markup=self._main_keyboard(user))
+            text, kb = home_view(user)
+            self.send_message(chat_id, text, reply_markup=kb)
+            return
         self.send_message(chat_id, "Меню — кнопки внизу 👇\n\n" + joke_html('help', user=user),
                           reply_markup=self._main_keyboard(user))
 
@@ -927,6 +937,10 @@ class TelegramBot:
         item = WorkItem.query.filter_by(user_id=user.id, external_id=str(external_id)).first()
         if not item and str(external_id).isdigit():
             item = WorkItem.query.filter_by(user_id=user.id, id=int(external_id)).first()
+
+        from app.bot.planner import active, card_view
+        if item and active(user):
+            return card_view(user, item)
 
         # Автоматическая синхронизация при первом открытии после миграции v3.1, если поля еще NULL
         if item and item.control_text is None and item.point_name is None:
@@ -1494,6 +1508,10 @@ class TelegramBot:
             return
 
         # Действия с расписанием доступны всегда!
+        from app.bot.planner import handle_callback
+        if handle_callback(self, user, chat_id, message_id, cb_id, data):
+            return
+
         if data.startswith('sch|'):
             parts = data.split('|')
             mode = parts[1] if len(parts) > 1 else 'today'
@@ -1668,6 +1686,10 @@ class TelegramBot:
             self.edit_message(chat_id, message_id, self._build_profile_text(user),
                               self._profile_keyboard(user))
         elif data == 'toggle_theme_femboy':
+            if not user.femboy_unlocked:
+                self.answer_callback(cb_id, 'Тема недоступна')
+                return
+            user.theme_new = False
             user.theme_femboy = not getattr(user, 'theme_femboy', False)
             db.session.commit()
             alert = '🐾 Тема: ВКЛ :3' if user.theme_femboy else '🐾 Тема: ВЫКЛ'
@@ -1757,6 +1779,10 @@ class TelegramBot:
             return
 
         # --- команды, доступные всегда ---
+        from app.bot.planner import handle_message
+        if handle_message(self, user, chat_id, text):
+            return
+
         # --- обработка интерактивных действий администратора (ввод текста для юзера / рассылки) ---
         if is_admin and str(chat_id) in self._admin_state:
             state = self._admin_state[str(chat_id)]
@@ -1953,14 +1979,10 @@ class TelegramBot:
         elif low.startswith('/last') or norm == 'последняя проверка':
             self.send_message(chat_id, self._build_last_check_text(user))
         elif low.startswith('/interval'):
-            parts = text.split()
-            if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) >= 5:
-                user.check_interval = int(parts[1]) * 60
-                db.session.commit()
-                self.send_message(chat_id, f"Интервал проверки: {parts[1]} мин")
-            else:
-                self.send_message(chat_id,
-                                  "Использование: <code>/interval 15</code> (минуты, минимум 5)")
+            self.send_message(chat_id, 'Статусы Timeline обновляются каждые 6 часов: '
+                              '00:00, 06:00, 12:00, 18:00 МСК.\n'
+                              'Напоминания по сохранённым срокам проверяются каждую минуту.\n'
+                              'Для проверки сейчас: /check')
         else:
             self.send_message(chat_id, "Не понял команду. Жми кнопки внизу или /help\n\n"
                               + joke_html('unknown', user=user),

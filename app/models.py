@@ -74,6 +74,15 @@ class User(db.Model):
     # NEW v2.1: Секретная фембой/фурри локализация (R5)
     femboy_unlocked = db.Column(db.Boolean, default=False)
     theme_femboy = db.Column(db.Boolean, default=False)
+    new_unlocked = db.Column(db.Boolean, default=False)
+    theme_new = db.Column(db.Boolean, default=False)
+    quiet_start = db.Column(db.String(5), default='23:00')
+    quiet_end = db.Column(db.String(5), default='08:00')
+    urgent_at_night = db.Column(db.Boolean, default=True)
+    reminder_hours = db.Column(db.String(50), default='24,12,1')
+    muted_disciplines = db.Column(db.Text, default='[]')
+    planner_input = db.Column(db.String(100))
+    schedule_snapshot = db.Column(db.Text)
 
     # NEW v3.0: Ежедневный студенческий гороскоп
     horoscope_notify = db.Column(db.Boolean, default=False)
@@ -129,7 +138,24 @@ class WorkItem(db.Model):
     points = db.Column(db.String(50))       # текущие/макс баллы, напр. "5 из 5"
     teacher_note = db.Column(db.Text)       # рецензия / комментарий преподавателя
     unavailability_reason = db.Column(db.String(255))  # инфо о доступности задания
+    personal_progress = db.Column(db.String(20), default='todo')
+    personal_note = db.Column(db.Text)
+    snooze_until = db.Column(db.DateTime)
+    planner_reminded = db.Column(db.String(200), default='')
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'external_id', name='uq_user_work'),
     )
+
+
+class PlannerEvent(db.Model):
+    """Durable notifications and bounded work history for the experimental theme."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('bot_user.id', ondelete='CASCADE'), nullable=False, index=True)
+    work_id = db.Column(db.Integer, db.ForeignKey('user_work_item.id', ondelete='CASCADE'), index=True)
+    kind = db.Column(db.String(30), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    due_at = db.Column(db.DateTime, default=utc_now, index=True)
+    sent_at = db.Column(db.DateTime)
+    attempts = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=utc_now)
