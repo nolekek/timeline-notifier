@@ -1979,6 +1979,12 @@ class TelegramBot:
         elif low.startswith('/last') or norm == 'последняя проверка':
             self.send_message(chat_id, self._build_last_check_text(user))
         elif low.startswith('/interval'):
+            # Retain the stored preference for old clients and admin tools.
+            # The common remote-sync cron deliberately ignores this preference.
+            parts = text.split()
+            if len(parts) > 1 and parts[1].isdigit() and int(parts[1]) >= 5:
+                user.check_interval = int(parts[1]) * 60
+                db.session.commit()
             self.send_message(chat_id, 'Статусы Timeline обновляются каждые 6 часов: '
                               '00:00, 06:00, 12:00, 18:00 МСК.\n'
                               'Напоминания по сохранённым срокам проверяются каждую минуту.\n'

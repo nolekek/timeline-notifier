@@ -22,3 +22,4 @@ jobs:
       - run: python -m compileall -q app tests
       - run: python tests/smoke_test.py
       - run: python tests/planner_test.py
+        if: ${{ !cancelled() }}
