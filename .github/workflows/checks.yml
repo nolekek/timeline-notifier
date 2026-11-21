@@ -1,0 +1,27 @@
+name: Offline checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Moscow
+      SECRET_KEY: ci-offline-test-key
+      CRED_KEY: ci-offline-test-key
+      ADMIN_PASSWORD: ci-offline-test-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m compileall -q app tests
+      - run: python tests/smoke_test.py
+        env:
+          ADMIN_PASSWORD: ''
+      - run: python tests/planner_test.py
+        if: ${{ !cancelled() }}

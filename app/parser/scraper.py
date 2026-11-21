@@ -103,7 +103,7 @@ class TimelineScraper:
             self.semester_id = self._detect_semester_id(session)
         if self.semester_id is None:
             logger.error("Не удалось определить semesterId")
-            return []
+            raise RuntimeError('Не удалось определить semesterId: синхронизация отменена')
         logger.info(f"Используется semesterId={self.semester_id}")
 
         headers = {
@@ -135,7 +135,7 @@ class TimelineScraper:
                 resp.raise_for_status()
             except Exception as e:
                 logger.error(f"Ошибка запроса SendGrid (стр. {page}): {e}")
-                break
+                raise RuntimeError('Не удалось загрузить полную ведомость Timeline') from e
 
             if page == 1:
                 dump_path = self._dump(resp.text)
@@ -146,16 +146,21 @@ class TimelineScraper:
                 data = resp.json()
             except ValueError:
                 logger.error(f"SendGrid вернул не JSON. Ответ: {resp.text[:300]!r}")
-                break
+                raise RuntimeError('Timeline вернул некорректную ведомость') from None
 
-            rows = data.get('Rows', [])
+            if not isinstance(data, dict) or not isinstance(data.get('Rows'), list):
+                raise RuntimeError('Изменился формат ведомости Timeline')
+            rows = data['Rows']
             all_rows.extend(rows)
 
             total_pages = data.get('Total', 1)
             try:
                 total_pages = int(total_pages)
             except (ValueError, TypeError):
-                total_pages = 1
+                raise RuntimeError('Некорректное число страниц Timeline') from None
+
+            if total_pages > max_pages or (not rows and page < total_pages):
+                raise RuntimeError('Неполная ведомость Timeline: обновление отменено')
 
             if page >= total_pages or not rows:
                 break

@@ -30,6 +30,15 @@ def _auto_migrate():
             if res_user:
                 existing_user = {row[1] for row in res_user}
                 user_columns = [
+                    ('new_unlocked', 'BOOLEAN DEFAULT 0'),
+                    ('theme_new', 'BOOLEAN DEFAULT 0'),
+                    ('quiet_start', "VARCHAR(5) DEFAULT '23:00'"),
+                    ('quiet_end', "VARCHAR(5) DEFAULT '08:00'"),
+                    ('urgent_at_night', 'BOOLEAN DEFAULT 1'),
+                    ('reminder_hours', "VARCHAR(50) DEFAULT '24,12,1'"),
+                    ('muted_disciplines', "TEXT DEFAULT '[]'"),
+                    ('planner_input', 'VARCHAR(100)'),
+                    ('schedule_snapshot', 'TEXT'),
                     ('group_name', "VARCHAR(50) DEFAULT 'МКТ-2531'"),
                     ('group_manually_set', "BOOLEAN DEFAULT 0"),
                     ('session_cookies', "TEXT"),
@@ -66,6 +75,10 @@ def _auto_migrate():
             if res_work:
                 existing_work = {row[1] for row in res_work}
                 work_columns = [
+                    ('personal_progress', "VARCHAR(20) DEFAULT 'todo'"),
+                    ('personal_note', 'TEXT'),
+                    ('snooze_until', 'DATETIME'),
+                    ('planner_reminded', "VARCHAR(200) DEFAULT ''"),
                     ('is_overdue', "BOOLEAN DEFAULT 0"),
                     ('reminder_1_sent', "BOOLEAN DEFAULT 0"),
                     ('point_name', "VARCHAR(300)"),
