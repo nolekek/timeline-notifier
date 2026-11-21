@@ -21,5 +21,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m compileall -q app tests
       - run: python tests/smoke_test.py
+        env:
+          ADMIN_PASSWORD: ''
       - run: python tests/planner_test.py
         if: ${{ !cancelled() }}

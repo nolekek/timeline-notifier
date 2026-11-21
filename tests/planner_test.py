@@ -198,6 +198,33 @@ class PlannerTests(unittest.TestCase):
         self.assertIn('10:40 → <b>12:30</b>', text)
         self.assertIn('305 → <b>412</b>', text)
 
+    def test_scheduler_syncs_every_six_hours_in_both_modes(self):
+        from app.scheduler import jobs
+        for low_power in (True, False):
+            with patch.object(jobs, '_scheduler', None), patch.object(jobs, 'BackgroundScheduler') as factory:
+                with patch.dict(self.app.config, {'LOW_POWER_MODE': low_power}):
+                    jobs.start_scheduler(self.app)
+                factory.assert_called_once_with(daemon=True, timezone='Europe/Moscow')
+                calls = factory.return_value.add_job.call_args_list
+                sync = next(c for c in calls if c.kwargs.get('id') == 'check_all_users')
+                self.assertEqual(sync.kwargs['trigger'], 'cron')
+                self.assertEqual(sync.kwargs['hour'], '0,6,12,18')
+                reminders = next(c for c in calls if c.kwargs.get('id') == 'planner_notifications')
+                self.assertEqual(reminders.kwargs['seconds'], 60)
+
+    def test_partial_timeline_response_is_rejected(self):
+        from types import SimpleNamespace
+        from app.parser.scraper import TimelineScraper
+        from unittest.mock import Mock
+        session = Mock()
+        response = Mock()
+        response.json.return_value = {'Rows': [{'Id': '1'}], 'Total': 2}
+        session.get.side_effect = [response, RuntimeError('page two unavailable')]
+        auth = SimpleNamespace(get_session=lambda: session, verify_ssl=False)
+        scraper = TimelineScraper(auth, 'http://offline/send', 'http://offline/grid', semester_id=30)
+        with self.assertRaisesRegex(RuntimeError, 'полную ведомость'):
+            scraper.fetch_works()
+
 
 if __name__ == '__main__':
     unittest.main()
