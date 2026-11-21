@@ -364,13 +364,9 @@ def _check_user_locked(app, user_id: int, notify: bool, force: bool) -> str:
             if status_changes:
                 notify_status_changes(sender, user.chat_id, status_changes)
 
-        items = WorkItem.query.filter_by(user_id=user.id).all()
-        groups, overdue = _check_deadline_reminders(items, send=will_notify, app=app)
         if will_notify:
-            if any(groups.values()):
-                notify_deadline_reminders(sender, user.chat_id, groups)
-            if overdue:
-                notify_overdue(sender, user.chat_id, overdue)
+            from app.bot.planner_jobs import _process_legacy
+            _process_legacy(sender, user, app)
 
         user.fail_streak = 0
         _fail_streak[user.id] = 0

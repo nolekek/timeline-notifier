@@ -225,6 +225,15 @@ class PlannerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'полную ведомость'):
             scraper.fetch_works()
 
+    def test_legacy_delivery_failure_preserves_reminder_flags(self):
+        from app.bot.planner_jobs import _process_legacy
+        sender = Sender(False)
+        _process_legacy(sender, self.user, self.app)
+        self.assertFalse(self.work.reminder_1_sent)
+        sender.ok = True
+        _process_legacy(sender, self.user, self.app)
+        self.assertTrue(self.work.reminder_1_sent)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -680,6 +680,17 @@ class TelegramBot:
                           reply_markup=self._main_keyboard(user))
 
     def _help_text(self, user=None) -> str:
+        from app.bot.planner import active
+        if active(user):
+            return ('🧭 <b>Планер</b>\n\n'
+                    '/menu — главное меню\n/week — пары и дедлайны недели\n'
+                    '/status — задания и личный прогресс\n/task ID — карточка задания\n'
+                    '/find текст — поиск\n/scores — баллы\n/schedule — расписание\n'
+                    '/settings — уведомления и тихие часы\n/themes — выбор темы\n'
+                    '/profile — учётная запись\n/check — обновить Timeline сейчас\n'
+                    '/feedback текст — написать админу\n/cancel — отменить ввод\n\n'
+                    'Статусы обновляются каждые 6 часов, напоминания проверяются каждую минуту. '
+                    'Время — МСК. Личные заметки и прогресс не меняют данные в вузе.')
         is_femboy = bool(user and getattr(user, 'theme_femboy', False))
         text = HELP_TEXT_FEMBOY if is_femboy else HELP_TEXT
         return text + "\n\n" + joke_html('help', user=user)
@@ -1780,7 +1791,7 @@ class TelegramBot:
 
         # --- команды, доступные всегда ---
         from app.bot.planner import handle_message
-        if handle_message(self, user, chat_id, text):
+        if not (is_admin and str(chat_id) in self._admin_state) and handle_message(self, user, chat_id, text):
             return
 
         # --- обработка интерактивных действий администратора (ввод текста для юзера / рассылки) ---
