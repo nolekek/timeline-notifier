@@ -83,6 +83,7 @@ class User(db.Model):
     muted_disciplines = db.Column(db.Text, default='[]')
     planner_input = db.Column(db.String(100))
     schedule_snapshot = db.Column(db.Text)
+    planner_last_notice_at = db.Column(db.DateTime)
 
     # NEW v3.0: Ежедневный студенческий гороскоп
     horoscope_notify = db.Column(db.Boolean, default=False)

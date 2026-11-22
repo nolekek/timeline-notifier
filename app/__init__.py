@@ -39,6 +39,7 @@ def _auto_migrate():
                     ('muted_disciplines', "TEXT DEFAULT '[]'"),
                     ('planner_input', 'VARCHAR(100)'),
                     ('schedule_snapshot', 'TEXT'),
+                    ('planner_last_notice_at', 'DATETIME'),
                     ('group_name', "VARCHAR(50) DEFAULT 'МКТ-2531'"),
                     ('group_manually_set', "BOOLEAN DEFAULT 0"),
                     ('session_cookies', "TEXT"),

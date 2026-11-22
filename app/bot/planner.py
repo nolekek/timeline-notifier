@@ -1,6 +1,7 @@
 """Opt-in planner UI. Legacy and femboy interfaces keep their existing handlers."""
 import html
 import json
+import re
 from datetime import datetime, timedelta, timezone
 
 from app.models import db, User, WorkItem, PlannerEvent, utc_now
@@ -73,8 +74,19 @@ def unfinished(item):
 
 
 def items_for(user):
+    now = now_local()
     return sorted(WorkItem.query.filter_by(user_id=user.id).all(),
-                  key=lambda it: (not unfinished(it), deadline(it) or datetime.max, it.id))
+                  key=lambda it: (not unfinished(it), bool(deadline(it) and deadline(it) < now),
+                                  deadline(it) or datetime.max, it.id))
+
+
+def recent(item, now=None):
+    due = deadline(item)
+    return not due or due >= (now or now_local()) - timedelta(days=7)
+
+
+def default_week_offset():
+    return 1 if now_local().weekday() >= 5 else 0
 
 
 def list_view(user, page=0, mode='open', offset=0):
@@ -84,12 +96,17 @@ def list_view(user, page=0, mode='open', offset=0):
         start = now_local().date() - timedelta(days=now_local().weekday()) + timedelta(weeks=offset)
         items = [it for it in items if deadline(it) and start <= deadline(it).date() < start + timedelta(days=7)]
     elif mode == 'open':
-        items = [it for it in items if unfinished(it)]
+        items = [it for it in items if unfinished(it) and recent(it)]
+    elif mode == 'overdue':
+        items = sorted([it for it in items if unfinished(it) and deadline(it) and deadline(it) < now_local()],
+                       key=lambda it: deadline(it), reverse=True)
     elif mode == 'doing':
         items = [it for it in items if it.personal_progress == 'doing' and unfinished(it)]
     pages = max(1, (len(items) + 3) // 4)
     page = min(page, pages - 1)
-    lines = [f'📋 <b>Мои задания</b> · {len(items)} · {page + 1}/{pages}', '']
+    label = {'open': 'Актуальные задания', 'overdue': 'Долги', 'doing': 'Делаю',
+             'all': 'Все задания', 'week': 'Задания недели'}.get(mode, 'Мои задания')
+    lines = [f'📋 <b>{label}</b> · {len(items)} · {page + 1}/{pages}', '']
     rows = []
     for it in items[page * 4:page * 4 + 4]:
         dt = deadline(it)
@@ -100,16 +117,27 @@ def list_view(user, page=0, mode='open', offset=0):
                       f'Мой прогресс: {PROGRESS.get(it.personal_progress, PROGRESS["todo"])}', ''])
         rows.append([button(f'📄 {str(it.point_name or clean_discipline_name(it.discipline))[:45]}', f'p|card|{it.id}')])
     if not items:
-        lines.append('Здесь пока нет заданий. Данные обновляются каждые 6 часов; можно нажать «Проверить».')
-    rows.append([button('◀️', f'p|list|{page-1}|{mode}|{offset}'), button('▶️', f'p|list|{page+1}|{mode}|{offset}')])
-    rows.append([button('Несданные', 'p|list|0|open'), button('Делаю', 'p|list|0|doing'), button('Все', 'p|list|0|all')])
-    rows.append([button('🗓 Неделя', f'p|week|{offset}'), button('🏠 Меню', 'p|home')])
+        lines.append('В этом разделе заданий нет. Давние несданные работы доступны в «Долгах».')
+    if pages > 1:
+        nav = []
+        if page > 0:
+            nav.append(button('◀️', f'p|list|{page-1}|{mode}|{offset}'))
+        if page < pages-1:
+            nav.append(button('▶️', f'p|list|{page+1}|{mode}|{offset}'))
+        rows.append(nav)
+    rows.append([button('Актуальные', 'p|list|0|open'), button('Делаю', 'p|list|0|doing')])
+    rows.append([button('Долги', 'p|list|0|overdue'), button('Все', 'p|list|0|all')])
+    rows.append([button('🗓 Неделя', f'p|week|{offset if mode == "week" else default_week_offset()}'), button('🏠 Меню', 'p|home')])
+    if mode == 'open':
+        old = sum(unfinished(it) and not recent(it) for it in items_for(user))
+        if old:
+            lines.append(f'\nДавних долгов: {old}. Они сохранены в «Долгах» и не вызывают автоматическую рассылку.')
     return '\n'.join(lines), keyboard(rows)
 
 
-def week_view(user, offset=0):
+def week_view(user, offset=None):
     from app.parser.schedule import get_group_schedule
-    offset = max(-12, min(12, offset))
+    offset = default_week_offset() if offset is None else max(-12, min(12, offset))
     today = now_local().date()
     start = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
     end = start + timedelta(days=6)
@@ -119,7 +147,8 @@ def week_view(user, offset=0):
         schedule = []
     by_date = {d['date']: d['lessons'] for d in schedule if d.get('date')}
     works = items_for(user)
-    lines = [f'🗓 <b>{start:%d.%m}–{end:%d.%m.%Y}</b> · {esc(user.current_group)}',
+    lines = [f'🗓 <b>{start:%d.%m}–{end:%d.%m.%Y}</b> · {esc(user.current_group)}' +
+             (' · следующая учебная неделя' if offset == 1 and today.weekday() >= 5 else ''),
              'Время: МСК · статусы из последней синхронизации', '']
     lesson_count = task_count = 0
     days = ('Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс')
@@ -131,7 +160,10 @@ def week_view(user, offset=0):
         task_count += len(tasks)
         lines.append(f'<b>{days[n]}, {day:%d.%m}' + (' · сегодня' if day == today else '') + '</b>')
         if lessons:
-            lines.append(f'🎓 Пар: {len(lessons)} · {esc(lessons[0].get("time"), 35)} — {esc(lessons[-1].get("time"), 35)}')
+            slots = sorted({l.get('time', '') for l in lessons if l.get('time')})
+            bounds = [re.split(r'\s*[-–—]\s*', t) for t in slots]
+            span = f'{bounds[0][0]}–{bounds[-1][-1]}' if bounds else 'время не указано'
+            lines.append(f'🎓 Временных слотов: {len(slots)} · {esc(span, 45)}')
         else:
             lines.append('Пар в загруженном расписании нет')
         for it in tasks[:3]:
@@ -141,12 +173,12 @@ def week_view(user, offset=0):
         if not tasks:
             lines.append('Дедлайнов нет')
         lines.append('')
-    lines.append(f'За неделю: {lesson_count} пар · {task_count} заданий к сдаче')
+    lines.append(f'За неделю: записей занятий — {lesson_count} (включая подгруппы); заданий к сдаче — {task_count}')
     if not schedule:
         lines.append('⚠️ Расписание не получено. Это не подтверждение отсутствия пар.')
     return '\n'.join(lines), keyboard([
         [button('◀️ Предыдущая', f'p|week|{offset-1}'), button('Следующая ▶️', f'p|week|{offset+1}')],
-        [button('📋 Задания недели', f'p|list|0|week|{offset}'), button('Эта неделя', 'p|week|0')],
+        [button('📋 Задания недели', f'p|list|0|week|{offset}'), button('Ближайшая неделя', f'p|week|{default_week_offset()}')],
         [button('🏠 Меню', 'p|home')]])
 
 
@@ -187,7 +219,9 @@ def settings_view(user):
              f'🔥 Часовые напоминания ночью: {"да" if user.urgent_at_night else "нет"}',
              f'☀️ Дайджест: {user.digest_notify_time} · {"вкл" if user.digest_notify else "выкл"}',
              f'📅 Расписание: {user.schedule_notify_time} · {"вкл" if user.schedule_notify else "выкл"}',
-             f'📚 Отключено предметов: {len(muted)}', '',
+             f'📚 Отключено предметов: {len(muted)}',
+             '🔕 Долги старше суток: без автоматических напоминаний',
+             '📨 Обычные события объединяются; не чаще раза в 15 минут', '',
              'Timeline обновляется каждые 6 часов. Напоминания по сохранённым срокам проверяются каждую минуту.']
     return '\n'.join(lines), keyboard([
         [button('🔔 Вкл/выкл', 'p|toggle|notify_enabled'), button('⏳ Пороги', 'p|thresholds')],
@@ -204,7 +238,7 @@ def home_view(user):
     doing = sum(it.personal_progress == 'doing' for it in items)
     return (f'🧭 <b>Планер</b>\n\nК сдаче: {len(items)} · Просрочено: {overdue} · Делаю: {doing}\n'
             'Выбери раздел. Прогресс и заметки видны только тебе.\nВремя дедлайнов и настроек — МСК.',
-            keyboard([[button('📋 Задания', 'p|list|0|open'), button('🗓 Моя неделя', 'p|week|0')],
+            keyboard([[button('📋 Задания', 'p|list|0|open'), button('🗓 Моя неделя', f'p|week|{default_week_offset()}')],
                       [button('⚙️ Настройки', 'p|settings'), button('🎨 Темы', 'themes')]]))
 
 
@@ -304,6 +338,16 @@ def handle_callback(bot, user, chat_id, message_id, cb_id, data):
                 return True
             user.theme_new = name == 'new'
             user.theme_femboy = name == 'femboy'
+            if name == 'new':
+                # Theme changes must not replay notifications already delivered in legacy.
+                for it in WorkItem.query.filter_by(user_id=user.id).all():
+                    sent = set(filter(None, (it.planner_reminded or '').split(',')))
+                    for hour in (48, 24, 12, 1):
+                        if getattr(it, f'reminder_{hour}_sent', False):
+                            sent.add(str(hour))
+                    if it.overdue_sent:
+                        sent.add('overdue')
+                    it.planner_reminded = ','.join(sorted(sent))
             user.planner_input = None
             db.session.commit()
             bot.send_message(chat_id, 'Меню обновлено', reply_markup=bot._main_keyboard(user))
@@ -323,7 +367,7 @@ def handle_callback(bot, user, chat_id, message_id, cb_id, data):
         if action == 'home':
             view = home_view(user)
         elif action == 'list':
-            mode = parts[3] if len(parts) > 3 and parts[3] in ('open', 'all', 'doing', 'week') else 'open'
+            mode = parts[3] if len(parts) > 3 and parts[3] in ('open', 'all', 'doing', 'week', 'overdue') else 'open'
             view = list_view(user, int(parts[2]), mode, max(-12, min(12, int(parts[4]))) if len(parts) > 4 else 0)
         elif action == 'week':
             view = week_view(user, int(parts[2]))

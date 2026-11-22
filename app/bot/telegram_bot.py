@@ -841,6 +841,9 @@ class TelegramBot:
         if self.app is not None and not has_app_context():
             with self.app.app_context():
                 return self._build_status_page(user, page, sort)
+        from app.bot.planner import active, list_view
+        if active(user):
+            return list_view(user, page=max(0, page-1))
         from app.services import enrich_work_item as _enrich, format_diagnostic_block
 
         items = self._status_items(user, sort)
@@ -2304,7 +2307,7 @@ class TelegramBot:
         status_id = self.send_message_id(chat_id, start_msg)
 
         def worker():
-            from app.scheduler.jobs import CHECK_SKIPPED, check_user
+            from app.scheduler.jobs import CHECK_SKIPPED, CHECK_FAILED, check_user
             result, error = None, None
             try:
                 result = check_user(self.app, user_id, notify=False)
@@ -2322,6 +2325,9 @@ class TelegramBot:
                             f"{diag}\n\n"
                             + joke_html('apology', user=user))
                     keyboard = None
+                elif result == CHECK_FAILED:
+                    text, keyboard = self._build_status_page(user)
+                    text = '⚠️ Не удалось обновить Timeline. Ниже сохранённые данные; попробую снова позже.\n\n' + text
                 elif result == CHECK_SKIPPED:
                     text, keyboard = self._build_status_page(user)
                     skip_prefix = ("🕒 Только что тыкал лапкой — не тревожу сайт зря :3\n\n"
