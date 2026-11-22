@@ -313,6 +313,15 @@ class PlannerTests(unittest.TestCase):
         _process_user(self.bot, self.user)
         self.assertEqual(self.bot.messages, [])
 
+    def test_daytime_urgent_reminder_bypasses_normal_cooldown(self):
+        self.enable()
+        self.user.urgent_at_night = False
+        self.user.planner_last_notice_at = utc_now()
+        db.session.commit()
+        _process_user(self.bot, self.user)
+        self.assertEqual(len(self.bot.messages), 1)
+        self.assertIn('≤ 1 ч', self.bot.messages[0][1])
+
 
 if __name__ == '__main__':
     unittest.main()

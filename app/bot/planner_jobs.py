@@ -157,8 +157,8 @@ def _process_user(sender, user):
             sent.add('overdue')
             item.planner_reminded = ','.join(sorted(sent))
             continue
-        urgent = hours_left is not None and 0 <= hours_left <= 1 and user.urgent_at_night
-        if snoozed or (quiet(user, now) and not urgent):
+        urgent = hours_left is not None and 0 <= hours_left <= 1
+        if snoozed or (quiet(user, now) and not (urgent and user.urgent_at_night)):
             continue
         if not personal_due and (tag is None or tag in sent):
             continue
