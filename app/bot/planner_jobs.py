@@ -68,6 +68,8 @@ def record_change(user, item, changes, notify=True):
 def record_new(user, item, notify=True):
     if not (active(user) and notify and user.notify_enabled and unfinished(item)) or muted(user, item):
         return
+    if deadline(item) and deadline(item) < now_local() - timedelta(days=1):
+        return  # An old work discovered during sync is not a new task for the student.
     db.session.add(PlannerEvent(user_id=user.id, work_id=item.id, kind='new',
         text=f'🆕 <b>Новое задание</b>\n{esc(item.discipline, 150)}\n{esc(item.point_name, 150)}\nСрок: {esc(item.deadline or "не указан")}'))
 
@@ -135,6 +137,7 @@ def _process_user(sender, user):
     now = now_local()
     if not user.notify_enabled:
         return
+    pending = []
     for item in WorkItem.query.filter_by(user_id=user.id).all():
         if not unfinished(item):
             item.snooze_until = None
@@ -150,16 +153,64 @@ def _process_user(sender, user):
         tag = 'overdue' if hours_left is not None and hours_left < 0 else str(threshold) if threshold is not None else None
         snoozed = item.snooze_until and item.snooze_until > now
         personal_due = item.snooze_until and item.snooze_until <= now
+        if tag == 'overdue' and (hours_left < -24 or item.overdue_sent) and not personal_due:
+            sent.add('overdue')
+            item.planner_reminded = ','.join(sorted(sent))
+            continue
         urgent = hours_left is not None and 0 <= hours_left <= 1 and user.urgent_at_night
         if snoozed or (quiet(user, now) and not urgent):
             continue
         if not personal_due and (tag is None or tag in sent):
             continue
-        title = '⏰ Личное напоминание' if personal_due else '🔴 Дедлайн прошёл' if tag == 'overdue' else f'⏳ До дедлайна не больше {threshold} ч'
-        text = f'<b>{title}</b>\n\n{esc(item.discipline, 180)}\n{esc(item.point_name, 180)}\nСрок: {esc(item.deadline or "не указан")}\nTimeline: {esc(item.status or "Не отправлена")} '
-        kb = keyboard([[button('📄 Задание', f'p|card|{item.id}'), button('⏰ Через 30 мин', f'p|setsnooze|{item.id}|30')]])
-        if sender.send_message(user.chat_id, text, reply_markup=kb):
-            if personal_due:
+        title = '⏰ Личное напоминание' if personal_due else '🔴 Дедлайн прошёл' if tag == 'overdue' else f'⏳ До дедлайна ≤ {threshold} ч'
+        from app.services import clean_discipline_name
+        text = f'<b>{title}</b>\n{esc(clean_discipline_name(item.discipline), 90)} · {esc(item.point_name, 100)}\nСрок: {esc(item.deadline or "не указан")} '
+        pending.append((bool(personal_due or urgent), item, tag, threshold, sent, text))
+    db.session.commit()  # Persist silent suppression even if there is nothing to deliver.
+    events = []
+    if not quiet(user, now):
+        events = PlannerEvent.query.filter_by(user_id=user.id, sent_at=None).filter(
+            PlannerEvent.due_at <= utc_now()).order_by(PlannerEvent.id).limit(30).all()
+        deliverable = []
+        for event in events:
+            item = db.session.get(WorkItem, event.work_id) if event.work_id else None
+            stale = event.created_at < utc_now() - timedelta(days=1)
+            stale_new = event.kind == 'new' and item and deadline(item) and deadline(item) < now - timedelta(days=1)
+            if muted(user, item) or stale or stale_new:
+                event.sent_at = utc_now()
+                continue
+            deliverable.append(event)
+        events = deliverable
+        db.session.commit()
+    cooling = user.planner_last_notice_at and utc_now() - user.planner_last_notice_at < timedelta(minutes=15)
+    pending.sort(key=lambda p: (not p[0], deadline(p[1]) or now, p[1].id))
+    if cooling:
+        pending = [p for p in pending if p[0]]
+        events = []
+    if not pending and not events:
+        return
+    lines = ['📨 <b>Обновления Планера</b>', '']
+    selected, selected_events, rows = [], [], []
+    for entry in pending[:5]:
+        lines.append(entry[5])
+        lines.append('')
+        item = entry[1]
+        rows.append([button(f'📄 {item.point_name or "Задание"}'[:45], f'p|card|{item.id}'),
+                     button('⏰ Позже', f'p|snooze|{item.id}')])
+        selected.append(entry)
+    for event in events[:max(0, 5-len(selected))]:
+        if len('\n'.join(lines)) + len(event.text) > 3500:
+            break
+        lines.extend([event.text, ''])
+        selected_events.append(event)
+        if event.work_id:
+            rows.append([button('📄 Открыть задание', f'p|card|{event.work_id}')])
+    rows.append([button('📋 Актуальные задания', 'p|list|0|open')])
+    ok = sender.send_message(user.chat_id, '\n'.join(lines), reply_markup=keyboard(rows))
+    if ok:
+        user.planner_last_notice_at = utc_now()
+        for _, item, tag, threshold, sent, _ in selected:
+            if item.snooze_until and item.snooze_until <= now:
                 item.snooze_until = None
             if tag:
                 sent.add(tag)
@@ -168,20 +219,10 @@ def _process_user(sender, user):
                 elif threshold is not None:
                     sent.update(str(h) for h in thresholds if h >= threshold)
                 item.planner_reminded = ','.join(sorted(sent))
-            db.session.commit()
-    if not quiet(user, now):
-        events = PlannerEvent.query.filter_by(user_id=user.id, sent_at=None).filter(
-            PlannerEvent.due_at <= utc_now()).order_by(PlannerEvent.id).limit(10).all()
-        for event in events:
-            item = db.session.get(WorkItem, event.work_id) if event.work_id else None
-            if muted(user, item):
-                event.sent_at = utc_now()
-                db.session.commit()
-                continue
-            kb = keyboard([[button('📄 Задание', f'p|card|{item.id}')]]) if item else None
-            if sender.send_message(user.chat_id, event.text, reply_markup=kb):
-                event.sent_at = utc_now()
-            else:
-                event.attempts += 1
-                event.due_at = utc_now() + timedelta(seconds=min(3600, 60 * 2**min(event.attempts, 6)))
-            db.session.commit()
+        for event in selected_events:
+            event.sent_at = utc_now()
+    else:
+        for event in selected_events:
+            event.attempts += 1
+            event.due_at = utc_now() + timedelta(seconds=min(3600, 60 * 2**min(event.attempts, 6)))
+    db.session.commit()

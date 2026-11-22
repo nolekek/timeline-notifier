@@ -234,6 +234,85 @@ class PlannerTests(unittest.TestCase):
         _process_legacy(sender, self.user, self.app)
         self.assertTrue(self.work.reminder_1_sent)
 
+    def test_old_debts_are_silent_but_explicit_snooze_still_works(self):
+        self.enable()
+        self.work.deadline = (planner.now_local() - timedelta(days=30)).strftime('%d.%m.%Y %H:%M')
+        db.session.commit()
+        _process_user(self.bot, self.user)
+        self.assertEqual(self.bot.messages, [])
+        self.assertIn('overdue', self.work.planner_reminded)
+        self.work.snooze_until = planner.now_local() - timedelta(seconds=1)
+        _process_user(self.bot, self.user)
+        self.assertEqual(len(self.bot.messages), 1)
+        self.assertIn('Личное напоминание', self.bot.messages[0][1])
+
+    def test_reminders_are_batched_and_normal_updates_have_cooldown(self):
+        self.enable()
+        self.work.deadline = (planner.now_local() + timedelta(hours=20)).strftime('%d.%m.%Y %H:%M')
+        for n in (20, 21):
+            db.session.add(WorkItem(user_id=self.user.id, external_id=str(n), discipline='Математика',
+                                   point_name=f'Задание {n}', status='Не отправлена', deadline=self.work.deadline))
+        db.session.commit()
+        _process_user(self.bot, self.user)
+        self.assertEqual(len(self.bot.messages), 1)
+        self.assertIn('Задание 20', self.bot.messages[0][1])
+        self.assertIn('Задание 21', self.bot.messages[0][1])
+        event = PlannerEvent(user_id=self.user.id, kind='change', text='Новые баллы')
+        db.session.add(event)
+        db.session.commit()
+        _process_user(self.bot, self.user)
+        self.assertEqual(len(self.bot.messages), 1)
+        self.assertIsNone(event.sent_at)
+        self.user.planner_last_notice_at = utc_now() - timedelta(minutes=16)
+        _process_user(self.bot, self.user)
+        self.assertEqual(len(self.bot.messages), 2)
+        self.assertIsNotNone(event.sent_at)
+
+    def test_current_tasks_hide_old_debts_without_deleting_them(self):
+        self.enable()
+        self.work.point_name = 'Старый долг'
+        self.work.deadline = (planner.now_local() - timedelta(days=40)).strftime('%d.%m.%Y %H:%M')
+        db.session.commit()
+        text, kb = planner.list_view(self.user)
+        self.assertNotIn('Старый долг', text)
+        self.assertIn('Давних долгов: 1', text)
+        text, _ = planner.list_view(self.user, mode='overdue')
+        self.assertIn('Старый долг', text)
+        self.assertEqual(WorkItem.query.count(), 1)
+        self.assertTrue(any(b['callback_data'].endswith('|overdue') for row in kb['inline_keyboard'] for b in row))
+
+    def test_sunday_week_opens_next_monday_and_navigation_stays_absolute(self):
+        from datetime import datetime, date
+        self.enable()
+        sunday = datetime(2026, 11, 22, 12)
+        days = [{'date': date(2026, 11, 23), 'lessons': [
+            {'time': '08:30 - 10:00'}, {'time': '10:15 - 11:45'}, {'time': '10:15 - 11:45'}]}]
+        with patch('app.bot.planner.now_local', return_value=sunday), patch('app.parser.schedule.get_group_schedule', return_value=days):
+            text, kb = planner.week_view(self.user)
+            self.assertIn('23.11–29.11.2026', text)
+            self.assertIn('слотов: 2 · 08:30–11:45', text)
+            self.assertEqual(kb['inline_keyboard'][0][0]['callback_data'], 'p|week|0')
+            previous, _ = planner.week_view(self.user, offset=0)
+            self.assertIn('16.11–22.11.2026', previous)
+
+    def test_refresh_status_page_keeps_planner_ui(self):
+        self.enable()
+        bot = TelegramBot('offline', app=self.app)
+        text, kb = bot._build_status_page(self.user)
+        self.assertIn('Актуальные задания', text)
+        self.assertNotIn('новые сверху', text)
+        self.assertTrue(any(b['callback_data'].startswith('p|') for row in kb['inline_keyboard'] for b in row))
+
+    def test_switching_from_legacy_does_not_replay_sent_reminders(self):
+        self.user.new_unlocked = True
+        self.work.reminder_1_sent = True
+        db.session.commit()
+        self.callback(self.user, 'theme|new')
+        self.assertIn('1', self.work.planner_reminded.split(','))
+        self.bot.messages.clear()
+        _process_user(self.bot, self.user)
+        self.assertEqual(self.bot.messages, [])
+
 
 if __name__ == '__main__':
     unittest.main()
